@@ -1,0 +1,32 @@
+// Scaffolding only — no fixtures yet. TODO(user): add stub FASTQ files under tests/data/
+// and wire them in below, then fill in the real assertions.
+
+nextflow_process {
+
+    name "Test Process SEQKIT_STATS"
+    script "modules/local/seqkit_stats.nf"
+    process "SEQKIT_STATS"
+
+    test("Summarizes ULK + Pore-C FASTQs into one TSV") {
+
+        when {
+            params {
+                sample = "test"
+            }
+            process {
+                """
+                // TODO(user): point at stub ULK + Pore-C FASTQ fixtures
+                input[0] = [
+                    file(params.test_data_dir + "/ulk_test.fastq"),
+                    file(params.test_data_dir + "/porec_test.fastq")
+                ]
+                """
+            }
+        }
+
+        then {
+            assert process.success
+            // TODO(user): assert the TSV has the expected columns / N50 once stub data exists
+        }
+    }
+}

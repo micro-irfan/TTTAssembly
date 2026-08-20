@@ -1,0 +1,47 @@
+# Dorado (GPU) for read self-correction (`dorado correct`).
+# Uses ONT's prebuilt Linux x64 binary, which bundles libtorch + htslib.
+# Equivalent of docker/dorado/Dockerfile.
+#
+# Base image: match to your host NVIDIA driver. Dorado 2.1.1 x64 wants a
+# reasonably recent CUDA driver (>= 525.105). The binary ships its own CUDA
+# runtime libs, so a CUDA *runtime* base is sufficient; adjust the tag if your
+# host driver is older/newer.
+# Run with GPU access via Apptainer/Singularity's --nv flag, e.g.:
+#   singularity run --nv dorado.sif dorado --version
+
+Bootstrap: docker
+From: nvidia/cuda:12.8.0-runtime-ubuntu22.04
+
+%labels
+    Tool dorado
+    Version 2.1.1
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    DORADO_VERSION=2.1.1
+
+    apt-get update && apt-get install -y --no-install-recommends \
+        wget ca-certificates tar
+    rm -rf /var/lib/apt/lists/*
+
+    wget -q "https://cdn.oxfordnanoportal.com/software/analysis/dorado-${DORADO_VERSION}-linux-x64.tar.gz"
+    tar -xzf "dorado-${DORADO_VERSION}-linux-x64.tar.gz" -C /opt
+    rm "dorado-${DORADO_VERSION}-linux-x64.tar.gz"
+    ln -s "/opt/dorado-${DORADO_VERSION}-linux-x64/bin/dorado" /usr/local/bin/dorado
+
+    # OPTIONAL: pre-download the correction model so `dorado correct` doesn't need
+    # internet at runtime. Confirm the exact model name for your Dorado version:
+    #   dorado download --model <correction-model-name> --models-directory /opt/dorado-models
+    # then at runtime pass it via the process:  dorado correct --model-path /opt/dorado-models ...
+    # If omitted, `dorado correct` fetches the model automatically on first run.
+
+%environment
+    # NOTE: keep this version in sync with DORADO_VERSION above (%environment
+    # runs standalone at container start, it can't see %post's shell variables).
+    export PATH="/opt/dorado-2.1.1-linux-x64/bin:${PATH}"
+
+%runscript
+    exec dorado "$@"
+
+%test
+    dorado --version

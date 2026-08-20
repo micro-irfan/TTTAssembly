@@ -1,0 +1,33 @@
+// Scaffolding only — no fixtures yet. TODO(user): add a stub ULK FASTQ under tests/data/
+// and wire it in below, then fill in the real assertions.
+// Tagged "gpu": requires a GPU runner (CI excludes this tag on standard runners — see
+// .github/workflows/ci.yml).
+
+nextflow_process {
+
+    name "Test Process DORADO_CORRECT"
+    script "modules/local/dorado_correct.nf"
+    process "DORADO_CORRECT"
+    tag "gpu"
+
+    test("Corrects ULK FASTQ reads") {
+
+        when {
+            params {
+                sample        = "test"
+                dorado_device = "cuda:0"
+            }
+            process {
+                """
+                // TODO(user): point at a stub ULK FASTQ fixture
+                input[0] = file(params.test_data_dir + "/ulk_test.fastq")
+                """
+            }
+        }
+
+        then {
+            assert process.success
+            // TODO(user): assert the corrected FASTA once stub data exists
+        }
+    }
+}

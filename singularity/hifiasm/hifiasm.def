@@ -1,0 +1,33 @@
+# hifiasm built from source. Not used by expert mode; prepared ahead for the
+# scalable-mode workflow (the user will supply those steps later).
+# Equivalent of docker/hifiasm/Dockerfile.
+
+Bootstrap: docker
+From: ubuntu:24.04
+
+%labels
+    Tool hifiasm
+    Version 0.25.0
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    # hifiasm git tags are unprefixed (e.g. 0.25.0). If checkout fails, try v${HIFIASM_VERSION}.
+    HIFIASM_VERSION=0.25.0
+
+    apt-get update && apt-get install -y --no-install-recommends \
+        git g++ make zlib1g-dev ca-certificates
+    rm -rf /var/lib/apt/lists/*
+
+    git clone https://github.com/chhylp123/hifiasm /opt/hifiasm
+    cd /opt/hifiasm
+    git checkout "${HIFIASM_VERSION}"
+    make -j"$(nproc)"
+
+%environment
+    export PATH="/opt/hifiasm:${PATH}"
+
+%runscript
+    exec hifiasm "$@"
+
+%test
+    hifiasm --version
