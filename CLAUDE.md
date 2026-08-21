@@ -36,21 +36,25 @@ These come from the ONT protocol PDF. Reproduce them faithfully.
 
 **Step 1 — BAM → FASTQ conversion + quality/length filtering**
 ```bash
-# ULK (ultra-long) reads
-samtools view -u -e '[qs]>=10 && length(seq)>=1000' <input_ulk.bam>   | samtools fastq > ultralongreads.fastq
-# Pore-C reads (same thresholds)
+# ULK (ultra-long) reads — higher length floor, this is what "ultra-long" means
+samtools view -u -e '[qs]>=10 && length(seq)>=10000' <input_ulk.bam>   | samtools fastq > ultralongreads.fastq
+# Pore-C reads — same qscore floor, lower length floor
 samtools view -u -e '[qs]>=10 && length(seq)>=1000' <input_porec.bam> | samtools fastq > porec.fastq
 ```
 - When `--filtering false`, drop the `-e '...'` expression and do a plain conversion
-  (`samtools fastq <in.bam> > out.fastq`). See §5 for the exact rule and the open question
-  logged in `session.md`.
+  (`samtools fastq <in.bam> > out.fastq`). See §5 for the exact rule.
+- Length thresholds differ by read type: `--min_len_ulk` (default `10000`) vs `--min_len_porec`
+  (default `1000`); `--min_qs` (default `10`) is shared by both. See §3.
 - Thread both `samtools view` and `samtools fastq` with `-@ ${task.cpus}`.
 - Hi-C reads are **already FASTQ** (`--hic_reads_1/2`); they are **not** converted here.
 
 **Step 2 — Read summary / QC statistics** (our addition; see §6 for tool choice)
 ```bash
-seqkit stats -a -T ultralongreads.fastq porec.fastq > read_stats.tsv
-# optional richer QC on the ultra-long reads (N50 / length / quality plots)
+# one report per read source, not one combined file — see SEQKIT_STATS in §5
+seqkit stats -a -T -j <threads> ultralongreads.fastq > ultralong.read_stats.tsv
+seqkit stats -a -T -j <threads> porec.fastq           > porec.read_stats.tsv
+seqkit stats -a -T -j <threads> ultralongreads.doradocorrect.fasta > corrected.read_stats.tsv
+# optional (--plot), richer QC on the ultra-long reads (N50 / length / quality plots)
 NanoPlot --fastq ultralongreads.fastq -o nanoplot_ulk
 ```
 
@@ -80,17 +84,18 @@ reads go to `--hifi`, and `--no-correction` tells Verkko not to re-correct them.
 | `--mode` | `expert` | `expert` or `scalable`. Dispatches the workflow. |
 | `--sample` | `sample` | Sample name; used to prefix all output filenames. |
 | `--filtering` | `true` | `true` → apply the qs/length filter; `false` → plain BAM→FASTQ. Accept `true/false/True/False`. |
-| `--ulk_reads` | `null` | Path to the ULK **BAM** (required in expert mode). |
-| `--porec_reads` | `null` | Path to the Pore-C **BAM**. Mutually exclusive with the Hi-C pair. |
-| `--hic_reads_1` | `null` | Path to Hi-C R1 **FASTQ**. |
-| `--hic_reads_2` | `null` | Path to Hi-C R2 **FASTQ**. |
+| `--ulk_reads` | `null` | Path to the ULK **BAM** (required in expert mode). Comma-separated list to merge multiple flowcells (typically 2-3 for ULK). |
+| `--porec_reads` | `null` | Path to the Pore-C **BAM**. Mutually exclusive with the Hi-C pair. Comma-separated list supported. |
+| `--hic_reads_1` | `null` | Path to Hi-C R1 **FASTQ**. Comma-separated list supported. |
+| `--hic_reads_2` | `null` | Path to Hi-C R2 **FASTQ**. Comma-separated list supported; must match `--hic_reads_1`'s count. |
 | `--output` | `results` | Output directory (publishDir target). |
 | `--max_memory_gb` | `null` | Integer GB passed to Verkko `--local-memory`. Required in expert mode. |
 | `--threads` | `8` | Default CPUs per process (maps to `task.cpus`). |
 | `--dorado_device` | `cuda:0` | Device string for `dorado correct -x`. |
-| `--min_qs` | `10` | Filter threshold, mean read qscore. |
-| `--min_len` | `1000` | Filter threshold, read length (bp). |
-| `--run_nanoplot` | `true` | Also run NanoPlot in the QC step (seqkit stats always runs). |
+| `--min_qs` | `10` | Filter threshold, mean read qscore. Shared by ULK and Pore-C. |
+| `--min_len_ulk` | `10000` | Filter threshold, ULK read length (bp). |
+| `--min_len_porec` | `1000` | Filter threshold, Pore-C read length (bp). |
+| `--plot` | `false` | Also run NanoPlot in the QC step (seqkit stats always runs regardless). Opt-in. |
 
 ### Reads-type inference (do not add a separate flag)
 - If `--porec_reads` is set → **Pore-C branch**.
@@ -100,7 +105,19 @@ reads go to `--hifi`, and `--no-correction` tells Verkko not to re-correct them.
 
 ### Validation (expert mode)
 Fail fast, before any process launches, if: `ulk_reads` missing; `max_memory_gb` missing;
-neither Pore-C nor Hi-C provided; both provided; a Hi-C file provided without its pair.
+neither Pore-C nor Hi-C provided; both provided; a Hi-C file provided without its pair;
+`hic_reads_1`/`hic_reads_2` comma-separated lists have different lengths.
+
+### Multi-flowcell inputs (comma-separated merge)
+`--ulk_reads`, `--porec_reads`, `--hic_reads_1`, `--hic_reads_2` each accept a comma-separated
+list of files (e.g. 2-3 ULK flowcells run separately). Rules:
+- All entries in one list must be the **same file type** (all `.bam`, or all `.fastq`/`.fastq.gz`)
+  — mixed types fail with a clear error before any process launches.
+- More than one file for a given input → merge with `MERGE_READS` first (`samtools merge` for
+  BAM, `cat` for FASTQ/FASTQ.GZ — gzip streams concatenate cleanly). Exactly one file → passed
+  through untouched, no merge process is invoked.
+- `--hic_reads_1` and `--hic_reads_2` lists must have matching lengths (validated in `main.nf`).
+- See `MERGE_READS` in §5 and the `splitReadsParam`/`mergeIfMultiple` helpers in `workflows/expert.nf`.
 
 ---
 
@@ -114,11 +131,12 @@ ont-t2t-assembly/
 ├── nextflow.config               # params, docker profile, per-process resources (ALREADY WRITTEN)
 ├── modules/
 │   └── local/
-│       ├── bam_to_fastq.nf       # BAM_TO_FASTQ (reused for ULK and Pore-C)
-│       ├── seqkit_stats.nf       # SEQKIT_STATS
-│       ├── nanoplot.nf           # NANOPLOT (optional)
+│       ├── common.nf             # BAM_TO_FASTQ + MERGE_READS (samtools-based read processing)
+│       ├── qc.nf                 # SEQKIT_STATS + NANOPLOT (NANOPLOT gated by --plot)
 │       ├── dorado_correct.nf     # DORADO_CORRECT (GPU)
-│       └── verkko.nf             # VERKKO (porec + hic handled with optional inputs)
+│       ├── verkko.nf             # VERKKO (porec + hic handled with optional inputs)
+│       ├── tool_versions.nf      # SAMTOOLS_VERSION + QC_VERSIONS + DORADO_VERSION + VERKKO_VERSION
+│       └── software_versions.nf  # SOFTWARE_VERSIONS — combines the above into one JSON
 ├── workflows/
 │   ├── expert.nf                 # the implemented workflow
 │   └── scalable.nf               # STUB — fail-fast TODO, user fills later
@@ -137,12 +155,46 @@ just implement the `.nf` files against them.
 
 ## 5. Module specs (reference implementations)
 
-Use DSL2, one `process` per file, `tag "${params.sample}"`, and `publishDir` into `params.output`.
-Containers are assigned in `nextflow.config` via `withName:` selectors — do not hard-code
-`container` in the modules unless a selector is missing.
+Use DSL2, `tag "${params.sample}"`, and `publishDir` into `params.output`. Containers are
+assigned in `nextflow.config` via `withName:` selectors — do not hard-code `container` in the
+modules unless a selector is missing. Related processes that share a container are grouped into
+one file (`common.nf`, `qc.nf`, `tool_versions.nf`) rather than one-process-per-file — `withName:`
+selectors key off the **process name**, not the filename, so this doesn't affect config wiring.
 
-### `BAM_TO_FASTQ` (modules/local/bam_to_fastq.nf)
-Reused for both ULK and Pore-C. A `label` string ("ultralong" / "porec") drives the output name.
+### `common.nf` — samtools-based read processing
+
+#### `MERGE_READS` (modules/local/common.nf)
+Merges a comma-separated multi-flowcell input into one file, before `BAM_TO_FASTQ`/`VERKKO`.
+Only invoked when there's more than one file for a given `--*_reads` param (see §3).
+```groovy
+process MERGE_READS {
+    tag "${params.sample}:${label}"
+    publishDir "${params.output}/merged", mode: 'copy'
+
+    input:
+    tuple val(label), path(reads), val(ext)
+
+    output:
+    tuple val(label), path("${params.sample}.${label}.merged.${ext}"), emit: merged
+
+    script:
+    def out = "${params.sample}.${label}.merged.${ext}"
+    if (ext == 'bam')
+        "samtools merge -@ ${task.cpus} -f ${out} ${reads}"
+    else
+        "cat ${reads} > ${out}"
+}
+```
+- Reuses the `ont-t2t/samtools:1.23.1` image (both `samtools merge` and `cat` are available there)
+  — no new container.
+- `ext` is determined by the caller (`splitReadsParam()` in `workflows/expert.nf`) from the file
+  extensions, not detected inside the process.
+- Same `-@ ${task.cpus}` / `params.threads` wiring as `BAM_TO_FASTQ`.
+
+#### `BAM_TO_FASTQ` (modules/local/common.nf)
+Reused for both ULK and Pore-C. A `label` string ("ultralong" / "porec") drives the output name
+**and** picks the length threshold (`--min_len_ulk` vs `--min_len_porec`); the qscore threshold
+(`--min_qs`) is shared.
 
 ```groovy
 process BAM_TO_FASTQ {
@@ -156,10 +208,11 @@ process BAM_TO_FASTQ {
     tuple val(label), path("${params.sample}.${label}.fastq"), emit: fastq
 
     script:
-    def out = "${params.sample}.${label}.fastq"
+    def out     = "${params.sample}.${label}.fastq"
+    def min_len = (label == 'ultralong') ? params.min_len_ulk : params.min_len_porec
     if (params.filtering.toString().toLowerCase() == 'true')
         """
-        samtools view -u -@ ${task.cpus} -e '[qs]>=${params.min_qs} && length(seq)>=${params.min_len}' ${bam} \
+        samtools view -u -@ ${task.cpus} -e '[qs]>=${params.min_qs} && length(seq)>=${min_len}' ${bam} \
             | samtools fastq -@ ${task.cpus} > ${out}
         """
     else
@@ -171,21 +224,30 @@ process BAM_TO_FASTQ {
 - The samtools filter expression contains no `$`, so single-quoting it inside the double-quoted
   Nextflow script block is safe.
 - Needs samtools ≥ 1.16 for the `-e` expression grammar (`[qs]`, `length(seq)`). Our image is 1.23.1.
+- `-@ ${task.cpus}` comes from the `cpus` directive in `nextflow.config` (`params.threads`) — no
+  hard-coded thread count in the module.
 
-### `SEQKIT_STATS` (modules/local/seqkit_stats.nf)
-Takes all FASTQs (collected) and writes one TSV.
+### `qc.nf` — read summary / QC
+
+#### `SEQKIT_STATS` (modules/local/qc.nf)
+Called once per read source from `expert.nf` — ULK, Pore-C (if present), and the
+Dorado-corrected reads — so each gets its own report rather than one combined file. `label`
+("ultralong" / "porec" / "corrected") drives the output filename, same pattern as `BAM_TO_FASTQ`.
 ```groovy
 process SEQKIT_STATS {
-    tag "${params.sample}"
+    tag "${params.sample}:${label}"
     publishDir "${params.output}/qc", mode: 'copy'
-    input:  path fastqs
-    output: path "${params.sample}.read_stats.tsv", emit: stats
-    script: "seqkit stats -a -T ${fastqs} > ${params.sample}.read_stats.tsv"
+    input:  tuple val(label), path(fastqs)
+    output: tuple val(label), path("${params.sample}.${label}.read_stats.tsv"), emit: stats
+    script: "seqkit stats -a -T -j ${task.cpus} ${fastqs} > ${params.sample}.${label}.read_stats.tsv"
 }
 ```
+- `-j ${task.cpus}` threads seqkit the same way `-@ ${task.cpus}` threads samtools — comes from
+  the `cpus` directive in `nextflow.config`, not hard-coded.
 
-### `NANOPLOT` (modules/local/nanoplot.nf)
+#### `NANOPLOT` (modules/local/qc.nf)
 Run on the ultra-long FASTQ only (that's where read-length/N50 matters for this workflow).
+Only invoked when `--plot` is set (opt-in; see §3) — `SEQKIT_STATS` always runs regardless.
 ```groovy
 process NANOPLOT {
     tag "${params.sample}"
@@ -244,6 +306,27 @@ process VERKKO {
   pick the cleaner one. The key outputs to expose are `assembly.fasta`,
   `assembly.haplotype1.fasta`, `assembly.haplotype2.fasta`.
 
+### Tool versions (modules/local/tool_versions.nf + software_versions.nf)
+One tiny version-capture process per container already used elsewhere in the pipeline (reuses
+the same image, so the reported version is guaranteed to match what actually ran), plus a
+combiner. All have no pipeline inputs — they run `<tool> --version` once per invocation:
+
+- `SAMTOOLS_VERSION` — `ont-t2t/samtools:1.23.1` (same container as `BAM_TO_FASTQ`/`MERGE_READS`)
+- `QC_VERSIONS` — `ont-t2t/qc:latest`; captures both seqkit and NanoPlot in one process (same
+  container as `SEQKIT_STATS`/`NANOPLOT`)
+- `DORADO_VERSION` — `ont-t2t/dorado:2.1.1`, deliberately **without** `--gpus all`: a version
+  check doesn't need GPU hardware
+- `VERKKO_VERSION` — `ont-t2t/verkko:2.3.2`
+
+Each writes `<tool>.version.txt` containing the raw first line of `<tool> --version` output
+(formats vary by tool — not reparsed/normalized further; see the module files if a
+specific tool's format needs stripping down to a bare version number).
+
+`SOFTWARE_VERSIONS` collects all `*.version.txt` files (`workflows/expert.nf` mixes + flattens
+the four channels above) plus `workflow.nextflow.version` and `workflow.manifest.version`, and
+writes `${params.sample}.software_versions.json` to `${params.output}/`. Runs in the qc
+container (already has python3 via miniforge) — no new image.
+
 ---
 
 ## 6. QC tool choice (step 2)
@@ -252,8 +335,9 @@ The doc stresses read **N50 ≥ 60 kb** as the driver of assembly quality, so th
 should surface N50 and the read-length distribution:
 
 - **seqkit stats -a** — fast, always run. Tabular: num_seqs, sum_len, min/avg/max, **N50**,
-  Q20(%), Q30(%). One TSV covering ULK + Pore-C.
-- **NanoPlot** — ONT-native, optional (`--run_nanoplot`). Adds read-length and quality plots
+  Q20(%), Q30(%). One TSV per read source (ULK, Pore-C, Dorado-corrected) — see `SEQKIT_STATS`
+  in §5 — not one combined file, so pre- vs post-correction stats are easy to diff.
+- **NanoPlot** — ONT-native, opt-in (`--plot`, default off). Adds read-length and quality plots
   and an HTML report for the ultra-long reads.
 
 Both live in the single `qc` image. `NanoComp` is a reasonable alternative if the user later
@@ -267,10 +351,10 @@ One image per tool, referenced by these local tags (set in `nextflow.config`):
 
 | Process | Image tag | Base / install |
 |---|---|---|
-| `BAM_TO_FASTQ` | `ont-t2t/samtools:1.23.1` | ubuntu, samtools built from source |
-| `SEQKIT_STATS`, `NANOPLOT` | `ont-t2t/qc:latest` | miniforge, `seqkit` + `nanoplot` |
-| `DORADO_CORRECT` | `ont-t2t/dorado:2.1.1` | `nvidia/cuda` runtime + Dorado CDN binary |
-| `VERKKO` | `ont-t2t/verkko:2.3.2` | miniforge, `verkko` from bioconda |
+| `BAM_TO_FASTQ`, `MERGE_READS`, `SAMTOOLS_VERSION` | `ont-t2t/samtools:1.23.1` | ubuntu, samtools built from source |
+| `SEQKIT_STATS`, `NANOPLOT`, `QC_VERSIONS`, `SOFTWARE_VERSIONS` | `ont-t2t/qc:latest` | miniforge, `seqkit` + `nanoplot` |
+| `DORADO_CORRECT`, `DORADO_VERSION` | `ont-t2t/dorado:2.1.1` | `nvidia/cuda` runtime + Dorado CDN binary |
+| `VERKKO`, `VERKKO_VERSION` | `ont-t2t/verkko:2.3.2` | miniforge, `verkko` from bioconda |
 | (scalable, later) | `ont-t2t/hifiasm:0.25.0` | ubuntu, hifiasm built from source |
 
 Build all:
@@ -308,7 +392,9 @@ nextflow run main.nf -profile docker \
 ## 9. Conventions
 
 - Nextflow DSL2, `nextflow.enable.dsl=2`.
-- One process per module file; UPPER_SNAKE_CASE process names.
+- UPPER_SNAKE_CASE process names. Group related processes that share a container into one
+  module file (e.g. `common.nf`, `qc.nf`, `tool_versions.nf`) rather than one-process-per-file —
+  `withName:` selectors in `nextflow.config` key off the process name, not the filename.
 - No hard-coded resources in modules — resources and `container` come from `nextflow.config`.
 - `publishDir mode: 'copy'`.
 - Prefix every output file with `${params.sample}`.

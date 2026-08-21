@@ -18,19 +18,30 @@ def helpMessage() {
         --max_memory_gb <GB> [options]
 
     Required (expert mode):
-      --ulk_reads       Path to the ULK BAM.
+      --ulk_reads       Path to the ULK BAM. Comma-separate multiple flowcells
+                        (e.g. "fc1.bam,fc2.bam,fc3.bam") to merge them before use.
       --max_memory_gb   Integer GB passed to Verkko --local-memory.
       One of:
-        --porec_reads             Path to the Pore-C BAM.
+        --porec_reads             Path to the Pore-C BAM. Comma-separated list supported.
         --hic_reads_1/2           Paths to the Hi-C R1/R2 FASTQs (both required together).
+                                   Each accepts a comma-separated list; --hic_reads_1 and
+                                   --hic_reads_2 must list the same number of files.
+
+    Multi-flowcell inputs:
+      Any of --ulk_reads/--porec_reads/--hic_reads_1/--hic_reads_2 may be a comma-separated
+      list (e.g. 2-3 ULK flowcells). All entries in one list must be the same file type (all
+      .bam, or all .fastq/.fastq.gz); they are merged (samtools merge for BAM, concatenation
+      for FASTQ) before the rest of the pipeline runs.
 
     Options:
       --mode            expert | scalable                         (default: ${params.mode})
       --sample          Sample name, prefixes all output filenames (default: ${params.sample})
       --filtering       true | false — apply qs/length filter on BAM->FASTQ (default: ${params.filtering})
-      --min_qs          Filter threshold, mean read qscore (default: ${params.min_qs})
-      --min_len         Filter threshold, read length in bp (default: ${params.min_len})
-      --run_nanoplot    Also run NanoPlot in the QC step (default: ${params.run_nanoplot})
+      --min_qs          Filter threshold, mean read qscore, both ULK and Pore-C (default: ${params.min_qs})
+      --min_len_ulk     Filter threshold, ULK read length in bp (default: ${params.min_len_ulk})
+      --min_len_porec   Filter threshold, Pore-C read length in bp (default: ${params.min_len_porec})
+      --plot            Also run NanoPlot in the QC step (default: ${params.plot}). seqkit
+                        stats always runs regardless.
       --threads         Default CPUs per process (default: ${params.threads})
       --dorado_device   Device string for `dorado correct -x` (default: ${params.dorado_device})
       --output          Output directory (default: ${params.output})
@@ -80,6 +91,14 @@ if (params.mode == 'expert') {
     }
     else if (!has_porec && (has_hic1 != has_hic2)) {
         errors << "--hic_reads_1 and --hic_reads_2 must both be provided"
+    }
+    else if (has_hic1 && has_hic2) {
+        def n1 = params.hic_reads_1.split(',').size()
+        def n2 = params.hic_reads_2.split(',').size()
+        if (n1 != n2) {
+            errors << "--hic_reads_1 and --hic_reads_2 must list the same number of " +
+                      "comma-separated flowcell/lane files (got ${n1} vs ${n2})"
+        }
     }
 }
 else if (params.mode == 'scalable') {

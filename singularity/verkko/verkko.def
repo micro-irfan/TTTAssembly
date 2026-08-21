@@ -17,7 +17,11 @@ From: condaforge/miniforge3:latest
 %post
     VERKKO_VERSION=2.3.2
 
+    # verkko 2.3.2 needs pulp <=2.7.0, and no pulp build supports Python 3.13,
+    # which the latest miniforge base ships. Pin Python to 3.12 so the solve
+    # (and the pulp downgrade) succeeds.
     mamba install -y -n base -c conda-forge -c bioconda \
+        "python=3.12" \
         "verkko=${VERKKO_VERSION}"
     mamba clean -afy
 

@@ -5,8 +5,8 @@ downstream analysis workflow for `SQK-ULK114` ultra-long reads combined with Por
 data. Assembly is done with **Verkko**. See [CLAUDE.md](CLAUDE.md) for the full spec.
 
 Two modes, selected with `--mode`:
-- `expert` — implemented: samtools (BAM → FASTQ, filtered) → QC (seqkit stats [+ NanoPlot]) →
-  Dorado correct (GPU, ULK only) → Verkko assembly (Pore-C or Hi-C branch).
+- `expert` — implemented: samtools (BAM → FASTQ, filtered) → QC (seqkit stats [+ NanoPlot with
+  `--plot`]) → Dorado correct (GPU, ULK only) → Verkko assembly (Pore-C or Hi-C branch).
 - `scalable` — stub only; fails fast until its steps are implemented.
 
 ## Requirements
@@ -61,15 +61,28 @@ nextflow run main.nf --help
 |---|---|---|
 | `--mode` | `expert` | `expert` or `scalable`. |
 | `--sample` | `sample` | Sample name; prefixes all output filenames. |
-| `--ulk_reads` | `null` | Path to the ULK BAM (required, expert mode). |
-| `--porec_reads` | `null` | Path to the Pore-C BAM. Mutually exclusive with the Hi-C pair. |
-| `--hic_reads_1/2` | `null` | Paths to the Hi-C R1/R2 FASTQs. |
+| `--ulk_reads` | `null` | Path to the ULK BAM (required, expert mode). Comma-separate multiple flowcells to merge them. |
+| `--porec_reads` | `null` | Path to the Pore-C BAM. Mutually exclusive with the Hi-C pair. Comma-separated list supported. |
+| `--hic_reads_1/2` | `null` | Paths to the Hi-C R1/R2 FASTQs. Comma-separated lists supported (same count on both). |
 | `--max_memory_gb` | `null` | Integer GB passed to Verkko `--local-memory` (required, expert mode). |
 | `--filtering` | `true` | `true` → apply qs/length filter; `false` → plain BAM→FASTQ. |
-| `--run_nanoplot` | `true` | Also run NanoPlot in the QC step. |
+| `--plot` | `false` | Also run NanoPlot in the QC step (seqkit stats always runs). |
 | `--output` | `results` | Output directory. |
 
 Full table in [CLAUDE.md §3](CLAUDE.md#3-parameters-define-in-nextflowconfig-document-in-a---help).
+
+### Multiple flowcells (ULK/Pore-C/Hi-C)
+
+`--ulk_reads`, `--porec_reads`, `--hic_reads_1`, and `--hic_reads_2` each accept a
+comma-separated list of files — useful since ULK runs are typically split across 2-3 flowcells:
+
+```bash
+--ulk_reads fc1.bam,fc2.bam,fc3.bam
+```
+
+All files in one list must be the same type (all `.bam`, or all `.fastq`/`.fastq.gz`); they're
+merged (`samtools merge` for BAM, concatenation for FASTQ) before the rest of the pipeline runs.
+`--hic_reads_1` and `--hic_reads_2` must list the same number of files.
 
 ### Container engine
 
@@ -85,10 +98,10 @@ Recipe files mirroring `docker/` live under `singularity/` (one `.def` per tool)
 
 ```bash
 singularity build singularity/samtools/samtools.sif singularity/samtools/samtools.def
-singularity build singularity/dorado/dorado.sif     singularity/dorado/dorado.def
-singularity build singularity/verkko/verkko.sif     singularity/verkko/verkko.def
+singularity build images/dorado.sif     singularity/dorado/dorado.def
+singularity build images/verkko.sif     singularity/verkko/verkko.def
 singularity build singularity/hifiasm/hifiasm.sif   singularity/hifiasm/hifiasm.def   # scalable mode
-singularity build singularity/qc/qc.sif             singularity/qc/qc.def
+singularity build images/qc.sif             singularity/qc/qc.def
 ```
 
 (`apptainer build ...` works identically if that's what's installed.) Building most of these
@@ -109,9 +122,11 @@ Published under `--output` (default `results/`):
 ```
 results/
 ├── fastq/          # ${sample}.ultralong.fastq, ${sample}.porec.fastq
+├── merged/           # ${sample}.<label>.merged.<ext> — only when a --*_reads input listed multiple flowcells
 ├── qc/              # ${sample}.read_stats.tsv, nanoplot_${sample}/
 ├── corrected/        # ${sample}.doradocorrect.fasta
 ├── verkko_output/     # assembly.fasta, assembly.haplotype1.fasta, assembly.haplotype2.fasta, ...
+├── ${sample}.software_versions.json  # samtools/seqkit/NanoPlot/dorado/verkko/nextflow/pipeline versions
 └── pipeline_info/     # timeline/report/trace/dag
 ```
 

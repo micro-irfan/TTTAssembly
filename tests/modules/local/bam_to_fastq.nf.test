@@ -4,17 +4,17 @@
 nextflow_process {
 
     name "Test Process BAM_TO_FASTQ"
-    script "modules/local/bam_to_fastq.nf"
+    script "modules/local/common.nf"
     process "BAM_TO_FASTQ"
 
     test("BAM input, filtering enabled (qs/length filter applied)") {
 
         when {
             params {
-                sample    = "test"
-                filtering = true
-                min_qs    = 10
-                min_len   = 1000
+                sample      = "test"
+                filtering   = true
+                min_qs      = 10
+                min_len_ulk = 10000
             }
             process {
                 """

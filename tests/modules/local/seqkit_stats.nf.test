@@ -4,10 +4,10 @@
 nextflow_process {
 
     name "Test Process SEQKIT_STATS"
-    script "modules/local/seqkit_stats.nf"
+    script "modules/local/qc.nf"
     process "SEQKIT_STATS"
 
-    test("Summarizes ULK + Pore-C FASTQs into one TSV") {
+    test("Summarizes the ULK FASTQ into its own TSV") {
 
         when {
             params {
@@ -15,11 +15,8 @@ nextflow_process {
             }
             process {
                 """
-                // TODO(user): point at stub ULK + Pore-C FASTQ fixtures
-                input[0] = [
-                    file(params.test_data_dir + "/ulk_test.fastq"),
-                    file(params.test_data_dir + "/porec_test.fastq")
-                ]
+                // TODO(user): point at a stub ULK FASTQ fixture
+                input[0] = [ "ultralong", file(params.test_data_dir + "/ulk_test.fastq") ]
                 """
             }
         }
