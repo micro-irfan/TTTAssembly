@@ -13,7 +13,7 @@ def helpMessage() {
     =====================================================
 
     Usage:
-      nextflow run main.nf -profile docker --mode expert --sample <name> \\
+      nextflow run main.nf -profile singularity --mode expert --sample <name> \\
         --ulk_reads <ulk.bam> [--porec_reads <porec.bam> | --hic_reads_1 <R1.fastq> --hic_reads_2 <R2.fastq>] \\
         --max_memory_gb <GB> [options]
 
@@ -49,13 +49,13 @@ def helpMessage() {
 
     Examples:
       # Pore-C, expert mode
-      nextflow run main.nf -profile docker \\
+      nextflow run main.nf -profile singularity \\
         --mode expert --sample HG002 \\
         --ulk_reads ulk.bam --porec_reads porec.bam \\
         --max_memory_gb 480 --output results
 
       # Hi-C, no pre-filtering
-      nextflow run main.nf -profile docker \\
+      nextflow run main.nf -profile singularity \\
         --mode expert --sample HG002 --filtering false \\
         --ulk_reads ulk.bam --hic_reads_1 hic_R1.fastq --hic_reads_2 hic_R2.fastq \\
         --max_memory_gb 480 --output results

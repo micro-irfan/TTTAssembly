@@ -23,8 +23,9 @@ The pipeline is **modular by mode**, selected with `--mode`:
   The user has explicitly asked to build without testing. GPU (Dorado) and multi-hundred-GB
   RAM (Verkko) steps cannot be run in a normal dev box anyway.
 - Do not run the pipeline. Just produce correct, readable code.
-- Docker is the only container engine wired up right now (a Singularity profile can be added
-  later — leave a commented placeholder, don't implement).
+- Singularity/Apptainer is the only container engine (Docker support was removed — see
+  `sessions/session.md`). `.sif` images are built from `singularity/*/*.def` into `images/`
+  (gitignored local build artifacts).
 - Keep it single-machine / local executor. No Slurm/SGE/LSF config (Verkko has its own grid
   support that is out of scope here).
 
@@ -128,7 +129,7 @@ ont-t2t-assembly/
 ├── CLAUDE.md                     # this file
 ├── session.md                    # working state / checklist / open questions
 ├── main.nf                       # entry: param validation + mode dispatch
-├── nextflow.config               # params, docker profile, per-process resources (ALREADY WRITTEN)
+├── nextflow.config               # params, singularity profile, per-process resources (ALREADY WRITTEN)
 ├── modules/
 │   └── local/
 │       ├── common.nf             # BAM_TO_FASTQ + MERGE_READS (samtools-based read processing)
@@ -140,15 +141,16 @@ ont-t2t-assembly/
 ├── workflows/
 │   ├── expert.nf                 # the implemented workflow
 │   └── scalable.nf               # STUB — fail-fast TODO, user fills later
-└── docker/                       # Dockerfiles (ALREADY WRITTEN — one image per tool)
-    ├── samtools/Dockerfile
-    ├── dorado/Dockerfile
-    ├── verkko/Dockerfile
-    ├── hifiasm/Dockerfile        # not used by expert mode; built ahead for scalable mode
-    └── qc/Dockerfile             # seqkit + NanoPlot for the summary step
+├── singularity/                  # .def recipes (ALREADY WRITTEN — one per tool)
+│   ├── samtools/samtools.def
+│   ├── dorado/dorado.def
+│   ├── verkko/verkko.def
+│   ├── hifiasm/hifiasm.def       # not used by expert mode; built ahead for scalable mode
+│   └── qc/qc.def                 # seqkit + NanoPlot for the summary step
+└── images/                       # built .sif files (gitignored — not checked in)
 ```
 
-`nextflow.config` and all `docker/*/Dockerfile` files already exist — **do not rewrite them**,
+`nextflow.config` and all `singularity/*/*.def` files already exist — **do not rewrite them**,
 just implement the `.nf` files against them.
 
 ---
@@ -185,7 +187,7 @@ process MERGE_READS {
         "cat ${reads} > ${out}"
 }
 ```
-- Reuses the `ont-t2t/samtools:1.23.1` image (both `samtools merge` and `cat` are available there)
+- Reuses the `images/samtools.sif` image (both `samtools merge` and `cat` are available there)
   — no new container.
 - `ext` is determined by the caller (`splitReadsParam()` in `workflows/expert.nf`) from the file
   extensions, not detected inside the process.
@@ -271,9 +273,9 @@ process DORADO_CORRECT {
     """
 }
 ```
-- GPU is enabled by `containerOptions '--gpus all'` in the config (`withName: DORADO_CORRECT`).
+- GPU is enabled by `containerOptions '--nv'` in the config (`withName: DORADO_CORRECT`).
 - `dorado correct` downloads its correction model on first run (needs internet) unless it's
-  pre-baked or a model cache volume is mounted. See the dorado Dockerfile comment. Leave a
+  pre-baked or a model cache volume is mounted. See the dorado `.def` comment. Leave a
   commented `--model-path` hook in the process for when a cached model is mounted.
 
 ### `VERKKO` (modules/local/verkko.nf)
@@ -311,12 +313,12 @@ One tiny version-capture process per container already used elsewhere in the pip
 the same image, so the reported version is guaranteed to match what actually ran), plus a
 combiner. All have no pipeline inputs — they run `<tool> --version` once per invocation:
 
-- `SAMTOOLS_VERSION` — `ont-t2t/samtools:1.23.1` (same container as `BAM_TO_FASTQ`/`MERGE_READS`)
-- `QC_VERSIONS` — `ont-t2t/qc:latest`; captures both seqkit and NanoPlot in one process (same
+- `SAMTOOLS_VERSION` — `images/samtools.sif` (same container as `BAM_TO_FASTQ`/`MERGE_READS`)
+- `QC_VERSIONS` — `images/qc.sif`; captures both seqkit and NanoPlot in one process (same
   container as `SEQKIT_STATS`/`NANOPLOT`)
-- `DORADO_VERSION` — `ont-t2t/dorado:2.1.1`, deliberately **without** `--gpus all`: a version
+- `DORADO_VERSION` — `images/dorado.sif`, deliberately **without** `--nv`: a version
   check doesn't need GPU hardware
-- `VERKKO_VERSION` — `ont-t2t/verkko:2.3.2`
+- `VERKKO_VERSION` — `images/verkko.sif`
 
 Each writes `<tool>.version.txt` containing the raw first line of `<tool> --version` output
 (formats vary by tool — not reparsed/normalized further; see the module files if a
@@ -345,29 +347,29 @@ wants to compare ULK vs Pore-C side by side — not needed now.
 
 ---
 
-## 7. Containers (already built from `docker/`)
+## 7. Containers (already written under `singularity/`)
 
-One image per tool, referenced by these local tags (set in `nextflow.config`):
+One image per tool, built into `images/` (gitignored) and referenced there by exact path
+(set in `nextflow.config`):
 
-| Process | Image tag | Base / install |
+| Process | Image | Base / install |
 |---|---|---|
-| `BAM_TO_FASTQ`, `MERGE_READS`, `SAMTOOLS_VERSION` | `ont-t2t/samtools:1.23.1` | ubuntu, samtools built from source |
-| `SEQKIT_STATS`, `NANOPLOT`, `QC_VERSIONS`, `SOFTWARE_VERSIONS` | `ont-t2t/qc:latest` | miniforge, `seqkit` + `nanoplot` |
-| `DORADO_CORRECT`, `DORADO_VERSION` | `ont-t2t/dorado:2.1.1` | `nvidia/cuda` runtime + Dorado CDN binary |
-| `VERKKO`, `VERKKO_VERSION` | `ont-t2t/verkko:2.3.2` | miniforge, `verkko` from bioconda |
-| (scalable, later) | `ont-t2t/hifiasm:0.25.0` | ubuntu, hifiasm built from source |
+| `BAM_TO_FASTQ`, `MERGE_READS`, `SAMTOOLS_VERSION` | `images/samtools.sif` | ubuntu, samtools built from source |
+| `SEQKIT_STATS`, `NANOPLOT`, `QC_VERSIONS`, `SOFTWARE_VERSIONS` | `images/qc.sif` | miniforge, `seqkit` + `nanoplot` |
+| `DORADO_CORRECT`, `DORADO_VERSION` | `images/dorado.sif` | `nvidia/cuda` runtime + Dorado CDN binary |
+| `VERKKO`, `VERKKO_VERSION` | `images/verkko.sif` | miniforge, `verkko` from bioconda |
+| (scalable, later) | `images/hifiasm.sif` | ubuntu, hifiasm built from source |
 
 Build all:
 ```bash
-docker build -t ont-t2t/samtools:1.23.1 docker/samtools
-docker build -t ont-t2t/dorado:2.1.1    docker/dorado
-docker build -t ont-t2t/verkko:2.3.2    docker/verkko
-docker build -t ont-t2t/hifiasm:0.25.0  docker/hifiasm
-docker build -t ont-t2t/qc:latest       docker/qc
+singularity build images/samtools.sif singularity/samtools/samtools.def
+singularity build images/dorado.sif   singularity/dorado/dorado.def
+singularity build images/verkko.sif   singularity/verkko/verkko.def
+singularity build images/hifiasm.sif  singularity/hifiasm/hifiasm.def
+singularity build images/qc.sif       singularity/qc/qc.def
 ```
-GPU note: the host needs the NVIDIA driver + `nvidia-container-toolkit`; the Dorado process
-requests the GPU via `--gpus all` (set in config). Verify with
-`docker run --rm --gpus all ont-t2t/dorado:2.1.1 dorado --version`.
+GPU note: the host needs the NVIDIA driver; the Dorado process requests the GPU via `--nv`
+(set in config). Verify with `singularity exec --nv images/dorado.sif dorado --version`.
 
 ---
 
@@ -375,13 +377,13 @@ requests the GPU via `--gpus all` (set in config). Verify with
 
 ```bash
 # Pore-C, expert mode
-nextflow run main.nf -profile docker \
+nextflow run main.nf -profile singularity \
   --mode expert --sample HG002 \
   --ulk_reads ulk.bam --porec_reads porec.bam \
   --max_memory_gb 480 --output results
 
 # Hi-C, no pre-filtering
-nextflow run main.nf -profile docker \
+nextflow run main.nf -profile singularity \
   --mode expert --sample HG002 --filtering false \
   --ulk_reads ulk.bam --hic_reads_1 hic_R1.fastq --hic_reads_2 hic_R2.fastq \
   --max_memory_gb 480 --output results
@@ -400,5 +402,5 @@ nextflow run main.nf -profile docker \
 - Prefix every output file with `${params.sample}`.
 - Keep the Verkko quirk comment (nano=uncorrected, hifi=corrected) in `verkko.nf`.
 - `scalable.nf` must exist and fail cleanly: `error "scalable mode not yet implemented"`.
-- Don't touch `nextflow.config` or the Dockerfiles unless a bug blocks the build; if you do,
-  note it in `session.md`.
+- Don't touch `nextflow.config` or the `singularity/*/*.def` files unless a bug blocks the
+  build; if you do, note it in `session.md`.

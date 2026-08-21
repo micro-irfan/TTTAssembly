@@ -12,38 +12,44 @@ Two modes, selected with `--mode`:
 ## Requirements
 
 - [Nextflow](https://www.nextflow.io/) `>=23.10.0`
-- Docker (or Singularity — see below), with an NVIDIA driver + `nvidia-container-toolkit` on
-  the host for the Dorado correct step (GPU).
+- Singularity or Apptainer, with an NVIDIA driver on the host for the Dorado correct step (GPU).
 
 ## 1. Build the container images
 
-One image per tool, built from `docker/`:
+One image per tool, built from the recipes under `singularity/` into `images/` (gitignored —
+these are large local build artifacts, not checked in):
 
 ```bash
-docker build -t ont-t2t/samtools:1.23.1 docker/samtools
-docker build -t ont-t2t/dorado:2.1.1    docker/dorado
-docker build -t ont-t2t/verkko:2.3.2    docker/verkko
-docker build -t ont-t2t/hifiasm:0.25.0  docker/hifiasm   # not used by expert mode; for scalable mode
-docker build -t ont-t2t/qc:latest       docker/qc
+singularity build images/samtools.sif singularity/samtools/samtools.def
+singularity build images/dorado.sif   singularity/dorado/dorado.def
+singularity build images/verkko.sif   singularity/verkko/verkko.def
+singularity build images/hifiasm.sif  singularity/hifiasm/hifiasm.def   # not used by expert mode; for scalable mode
+singularity build images/qc.sif       singularity/qc/qc.def
 ```
+
+(`apptainer build ...` works identically if that's what's installed.) Building most of these
+requires root or `--fakeroot` (`singularity build --fakeroot ...`), since they install system
+packages via `apt-get`/`mamba` in `%post`. `nextflow.config` points each process at its `.sif`
+under `images/` by exact path (relative to the pipeline directory), so build them there before
+running.
 
 Verify GPU access for Dorado:
 
 ```bash
-docker run --rm --gpus all ont-t2t/dorado:2.1.1 dorado --version
+singularity exec --nv images/dorado.sif dorado --version
 ```
 
 ## 2. Run the pipeline
 
 ```bash
 # Pore-C, expert mode
-nextflow run main.nf -profile docker \
+nextflow run main.nf -profile singularity \
   --mode expert --sample HG002 \
   --ulk_reads ulk.bam --porec_reads porec.bam \
   --max_memory_gb 480 --output results
 
 # Hi-C, no pre-filtering
-nextflow run main.nf -profile docker \
+nextflow run main.nf -profile singularity \
   --mode expert --sample HG002 --filtering false \
   --ulk_reads ulk.bam --hic_reads_1 hic_R1.fastq --hic_reads_2 hic_R2.fastq \
   --max_memory_gb 480 --output results
@@ -84,37 +90,6 @@ All files in one list must be the same type (all `.bam`, or all `.fastq`/`.fastq
 merged (`samtools merge` for BAM, concatenation for FASTQ) before the rest of the pipeline runs.
 `--hic_reads_1` and `--hic_reads_2` must list the same number of files.
 
-### Container engine
-
-```bash
-nextflow run main.nf -profile docker ...        # default, fully supported
-nextflow run main.nf -profile singularity ...    # alternative, no GPU flags needed on the CLI —
-                                                  # Singularity picks up host GPUs via --nv where configured
-```
-
-#### Building the Singularity/Apptainer images
-
-Recipe files mirroring `docker/` live under `singularity/` (one `.def` per tool):
-
-```bash
-singularity build singularity/samtools/samtools.sif singularity/samtools/samtools.def
-singularity build images/dorado.sif     singularity/dorado/dorado.def
-singularity build images/verkko.sif     singularity/verkko/verkko.def
-singularity build singularity/hifiasm/hifiasm.sif   singularity/hifiasm/hifiasm.def   # scalable mode
-singularity build images/qc.sif             singularity/qc/qc.def
-```
-
-(`apptainer build ...` works identically if that's what's installed.) Building most of these
-requires root or `--fakeroot` (`singularity build --fakeroot ...`), since they install system
-packages via `apt-get`/`mamba` in `%post`.
-
-The `singularity` profile in `nextflow.config` points each process at its local `.sif` under
-`singularity/<tool>/` (built with the commands above) instead of the Docker tags used by
-`-profile docker`, since those are local-only images Singularity can't pull by tag. Build the
-`.sif` files at those exact paths (relative to the pipeline directory) before running with
-`-profile singularity`. It also overrides `DORADO_CORRECT`'s GPU flag to `--nv` (Singularity's
-equivalent of Docker's `--gpus all`, which isn't a valid Singularity flag).
-
 ## 3. Outputs
 
 Published under `--output` (default `results/`):
@@ -123,7 +98,8 @@ Published under `--output` (default `results/`):
 results/
 ├── fastq/          # ${sample}.ultralong.fastq, ${sample}.porec.fastq
 ├── merged/           # ${sample}.<label>.merged.<ext> — only when a --*_reads input listed multiple flowcells
-├── qc/              # ${sample}.read_stats.tsv, nanoplot_${sample}/
+├── qc/              # ${sample}.ultralong.read_stats.tsv, ${sample}.porec.read_stats.tsv (if Pore-C),
+│                    # ${sample}.corrected.read_stats.tsv, nanoplot_${sample}/ (with --plot)
 ├── corrected/        # ${sample}.doradocorrect.fasta
 ├── verkko_output/     # assembly.fasta, assembly.haplotype1.fasta, assembly.haplotype2.fasta, ...
 ├── ${sample}.software_versions.json  # samtools/seqkit/NanoPlot/dorado/verkko/nextflow/pipeline versions

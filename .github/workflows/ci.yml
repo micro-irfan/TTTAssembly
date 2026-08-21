@@ -42,12 +42,16 @@ jobs:
       - name: Install nf-test
         uses: nf-core/setup-nf-test@v1
 
+      - name: Install Apptainer
+        uses: eWaterCycle/setup-apptainer@v2
+
       # GPU-only images (dorado) and the Verkko assembly image are not built here —
       # DORADO_CORRECT is tagged "gpu" and excluded below; VERKKO has no nf-test coverage.
-      - name: Build non-GPU Docker images
+      - name: Build non-GPU Singularity images
         run: |
-          docker build -t ont-t2t/samtools:1.23.1 docker/samtools
-          docker build -t ont-t2t/qc:latest        docker/qc
+          mkdir -p images
+          apptainer build images/samtools.sif singularity/samtools/samtools.def
+          apptainer build images/qc.sif       singularity/qc/qc.def
 
       - name: Run nf-test
         run: nf-test test --exclude-tag gpu

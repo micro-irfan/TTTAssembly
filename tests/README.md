@@ -17,14 +17,15 @@ Requires Nextflow `>=23.10.0` (same as the pipeline itself).
 ## 2. Build the images the tests need
 
 Tests run each process inside its real container via the `test` profile
-(`docker.enabled = true` in `nextflow.config`). Build the non-GPU images at minimum:
+(`singularity.enabled = true` in `nextflow.config`). Build the non-GPU images at minimum,
+into `images/` (see the top-level README's "Build the container images"):
 
 ```bash
-docker build -t ont-t2t/samtools:1.23.1 docker/samtools
-docker build -t ont-t2t/qc:latest       docker/qc
+singularity build images/samtools.sif singularity/samtools/samtools.def
+singularity build images/qc.sif       singularity/qc/qc.def
 ```
 
-`DORADO_CORRECT`'s test is tagged `gpu` and needs `ont-t2t/dorado:2.1.1` plus a GPU host; skip it
+`DORADO_CORRECT`'s test is tagged `gpu` and needs `images/dorado.sif` plus a GPU host; skip it
 if you don't have one (see §4).
 
 ## 3. Add fixtures
@@ -49,7 +50,7 @@ nf-test test tests/modules/local/bam_to_fastq.nf.test   # run a single file
 | Test file | Process | Notes |
 |---|---|---|
 | `modules/local/bam_to_fastq.nf.test` | `BAM_TO_FASTQ` | filtering on/off + FASTQ passthrough |
-| `modules/local/seqkit_stats.nf.test` | `SEQKIT_STATS` | ULK + Pore-C combined stats |
+| `modules/local/seqkit_stats.nf.test` | `SEQKIT_STATS` | per-source read stats (ULK example) |
 | `modules/local/nanoplot.nf.test` | `NANOPLOT` | ULK FASTQ report |
 | `modules/local/dorado_correct.nf.test` | `DORADO_CORRECT` | tagged `gpu`; excluded from standard CI runners |
 

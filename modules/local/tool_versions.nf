@@ -37,7 +37,7 @@ process QC_VERSIONS {
 }
 
 // DORADO_VERSION
-// Same container as DORADO_CORRECT. Deliberately no `--gpus all` — a version check doesn't
+// Same container as DORADO_CORRECT. Deliberately no `--nv` — a version check doesn't
 // need GPU hardware.
 
 process DORADO_VERSION {
