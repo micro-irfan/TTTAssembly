@@ -1,0 +1,36 @@
+# Verkko (assembly) via bioconda. The conda package pulls in its dependencies
+# (snakemake, GraphAligner, MashMap, Winnowmap) and, for Pore-C/Hi-C mode,
+# samtools, bwa, minimap2, seqtk and networkx.
+# Equivalent of docker/verkko/Dockerfile.
+#
+# Alternative to building this image: pull the prebuilt biocontainer directly
+#   singularity pull verkko.sif docker://quay.io/biocontainers/verkko:2.3.2--<buildhash>
+
+Bootstrap: docker
+From: condaforge/miniforge3:latest
+# For reproducibility, pin to a dated tag, e.g. condaforge/miniforge3:24.11.3-2
+
+%labels
+    Tool verkko
+    Version 2.3.2
+
+%post
+    VERKKO_VERSION=2.3.2
+
+    # verkko 2.3.2 needs pulp <=2.7.0, and no pulp build supports Python 3.13,
+    # which the latest miniforge base ships. Pin Python to 3.12 so the solve
+    # (and the pulp downgrade) succeeds.
+    mamba install -y -n base -c conda-forge -c bioconda \
+        "python=3.12" \
+        "verkko=${VERKKO_VERSION}"
+    mamba clean -afy
+
+%environment
+    # miniforge's base env is already on PATH at /opt/conda/bin
+    export PATH="/opt/conda/bin:${PATH}"
+
+%runscript
+    exec verkko "$@"
+
+%test
+    verkko --version

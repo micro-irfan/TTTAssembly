@@ -1,0 +1,57 @@
+name: CI
+
+# Scaffolding only. nf-test steps will fail until stub fixtures are added under tests/data/
+# (see TODO(user) markers in tests/**/*.nf.test) — that's expected for now, not masked here.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nextflow
+        uses: nf-core/setup-nextflow@v2
+        with:
+          version: "23.10.0"
+
+      - name: Pipeline parses (--help)
+        run: nextflow run main.nf --help
+
+      - name: Scalable mode fails fast
+        run: |
+          if nextflow run main.nf --mode scalable; then
+            echo "expected --mode scalable to fail fast" >&2
+            exit 1
+          fi
+
+  nf-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nextflow
+        uses: nf-core/setup-nextflow@v2
+        with:
+          version: "23.10.0"
+
+      - name: Install nf-test
+        uses: nf-core/setup-nf-test@v1
+
+      - name: Install Apptainer
+        uses: eWaterCycle/setup-apptainer@v2
+
+      # GPU-only images (dorado) and the Verkko assembly image are not built here —
+      # DORADO_CORRECT is tagged "gpu" and excluded below; VERKKO has no nf-test coverage.
+      - name: Build non-GPU Singularity images
+        run: |
+          mkdir -p images
+          apptainer build images/samtools.sif singularity/samtools/samtools.def
+          apptainer build images/qc.sif       singularity/qc/qc.def
+
+      - name: Run nf-test
+        run: nf-test test --exclude-tag gpu

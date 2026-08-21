@@ -1,0 +1,29 @@
+// Scaffolding only — no fixtures yet. TODO(user): add stub FASTQ files under tests/data/
+// and wire them in below, then fill in the real assertions.
+
+nextflow_process {
+
+    name "Test Process SEQKIT_STATS"
+    script "modules/local/qc.nf"
+    process "SEQKIT_STATS"
+
+    test("Summarizes the ULK FASTQ into its own TSV") {
+
+        when {
+            params {
+                sample = "test"
+            }
+            process {
+                """
+                // TODO(user): point at a stub ULK FASTQ fixture
+                input[0] = [ "ultralong", file(params.test_data_dir + "/ulk_test.fastq") ]
+                """
+            }
+        }
+
+        then {
+            assert process.success
+            // TODO(user): assert the TSV has the expected columns / N50 once stub data exists
+        }
+    }
+}

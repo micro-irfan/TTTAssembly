@@ -1,0 +1,7 @@
+name: ont-t2t-qc
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - seqkit
+  - nanoplot

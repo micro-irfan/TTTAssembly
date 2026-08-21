@@ -1,0 +1,29 @@
+// Scaffolding only — no fixtures yet. TODO(user): add a stub ULK FASTQ under tests/data/
+// and wire it in below, then fill in the real assertions.
+
+nextflow_process {
+
+    name "Test Process NANOPLOT"
+    script "modules/local/qc.nf"
+    process "NANOPLOT"
+
+    test("Produces a NanoPlot report for the ULK FASTQ") {
+
+        when {
+            params {
+                sample = "test"
+            }
+            process {
+                """
+                // TODO(user): point at a stub ULK FASTQ fixture
+                input[0] = file(params.test_data_dir + "/ulk_test.fastq")
+                """
+            }
+        }
+
+        then {
+            assert process.success
+            // TODO(user): assert the report directory contains the expected NanoPlot outputs
+        }
+    }
+}

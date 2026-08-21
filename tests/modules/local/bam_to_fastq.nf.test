@@ -1,0 +1,118 @@
+// Scaffolding only — no fixtures yet. TODO(user): add stub BAM/FASTQ files under
+// tests/data/ and wire them in below, then fill in the real assertions.
+
+nextflow_process {
+
+    name "Test Process BAM_TO_FASTQ"
+    script "modules/local/common.nf"
+    process "BAM_TO_FASTQ"
+
+    test("BAM input, filtering enabled (qs/length filter applied)") {
+
+        when {
+            params {
+                sample      = "test"
+                filtering   = true
+                min_qs      = 10
+                min_len_ulk = 10000
+            }
+            process {
+                """
+                // TODO(user): point at a stub ULK BAM fixture
+                input[0] = [ "ultralong", file(params.test_data_dir + "/ulk_test.bam"), "bam" ]
+                """
+            }
+        }
+
+        then {
+            assert process.success
+            // TODO(user): assert on fastq record count / content once stub data exists
+        }
+    }
+
+    test("Multiple BAM inputs (merge + filter piped in one step)") {
+
+        when {
+            params {
+                sample        = "test"
+                filtering     = true
+                min_qs        = 10
+                min_len_porec = 500
+            }
+            process {
+                """
+                // TODO(user): point at two stub Pore-C BAM fixtures (e.g. two flowcells)
+                input[0] = [ "porec", [ file(params.test_data_dir + "/porec_test_fc1.bam"),
+                                        file(params.test_data_dir + "/porec_test_fc2.bam") ], "bam" ]
+                """
+            }
+        }
+
+        then {
+            assert process.success
+            // TODO(user): assert the merged+filtered read count once stub data exists
+        }
+    }
+
+    test("BAM input, filtering disabled (plain conversion)") {
+
+        when {
+            params {
+                sample    = "test"
+                filtering = false
+            }
+            process {
+                """
+                // TODO(user): point at a stub Pore-C BAM fixture
+                input[0] = [ "porec", file(params.test_data_dir + "/porec_test.bam"), "bam" ]
+                """
+            }
+        }
+
+        then {
+            assert process.success
+            // TODO(user): assert output is an unfiltered superset of the filtered-test output
+        }
+    }
+
+    test("FASTQ passthrough input (already converted)") {
+
+        when {
+            params {
+                sample = "test"
+            }
+            process {
+                """
+                // TODO(user): point at a stub already-FASTQ fixture
+                input[0] = [ "porec", file(params.test_data_dir + "/porec_test.fastq"), "fastq" ]
+                """
+            }
+        }
+
+        then {
+            assert process.success
+            // TODO(user): assert output content is byte-identical to the input fixture
+        }
+    }
+
+    test("Empty filter result fails the task") {
+
+        when {
+            params {
+                sample        = "test"
+                filtering     = true
+                min_len_porec = 999999999   // impossibly high, guarantees zero reads pass
+            }
+            process {
+                """
+                // TODO(user): point at a stub Pore-C BAM fixture
+                input[0] = [ "porec", file(params.test_data_dir + "/porec_test.bam"), "bam" ]
+                """
+            }
+        }
+
+        then {
+            assert !process.success
+        }
+    }
+}
