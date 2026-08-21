@@ -3,11 +3,26 @@
 // ULK only) -> Verkko assembly (Pore-C or Hi-C branch). Reads-type is inferred from which of
 // params.porec_reads / params.hic_reads_1+2 is set; main.nf has already validated that
 // exactly one of those is populated before this workflow is invoked.
+//
+// Nextflow DSL2 only allows a process to be *invoked* once per workflow scope — fine for
+// VERKKO/NANOPLOT (mutually-exclusive/conditional single call sites), but BAM_TO_FASTQ,
+// MERGE_READS, and SEQKIT_STATS each need to run on more than one read source in the same run
+// (e.g. ULK + corrected always both run), so each is imported once per source with `as` and
+// called under that distinct name.
 
-include { BAM_TO_FASTQ      ; MERGE_READS   } from '../modules/local/common.nf'
-include { SEQKIT_STATS      ; NANOPLOT      } from '../modules/local/qc.nf'
-include { DORADO_CORRECT    } from '../modules/local/dorado_correct.nf'
-include { VERKKO            } from '../modules/local/verkko.nf'
+include { BAM_TO_FASTQ as BAM_TO_FASTQ_ULK       } from '../modules/local/common.nf'
+include { BAM_TO_FASTQ as BAM_TO_FASTQ_POREC     } from '../modules/local/common.nf'
+include { MERGE_READS  as MERGE_READS_ULK        } from '../modules/local/common.nf'
+include { MERGE_READS  as MERGE_READS_POREC      } from '../modules/local/common.nf'
+include { MERGE_READS  as MERGE_READS_HIC_R1     } from '../modules/local/common.nf'
+include { MERGE_READS  as MERGE_READS_HIC_R2     } from '../modules/local/common.nf'
+
+include { SEQKIT_STATS as SEQKIT_STATS_ULK       } from '../modules/local/qc.nf'
+include { SEQKIT_STATS as SEQKIT_STATS_POREC     } from '../modules/local/qc.nf'
+include { SEQKIT_STATS as SEQKIT_STATS_CORRECTED } from '../modules/local/qc.nf'
+include { NANOPLOT                               } from '../modules/local/qc.nf'
+include { DORADO_CORRECT                         } from '../modules/local/dorado_correct.nf'
+include { VERKKO                                 } from '../modules/local/verkko.nf'
 include { SAMTOOLS_VERSION  ; QC_VERSIONS   ; DORADO_VERSION ; VERKKO_VERSION } from '../modules/local/tool_versions.nf'
 include { SOFTWARE_VERSIONS } from '../modules/local/software_versions.nf'
 
@@ -29,26 +44,22 @@ def splitReadsParam(String paramName, String pathsStr) {
     [ files, exts[0] ]
 }
 
-// Merges multiple files under one label; passes a single file through untouched.
-def mergeIfMultiple(String label, List files, String ext) {
-    if (files.size() > 1)
-        MERGE_READS(Channel.of([ label, files, ext ])).merged
-    else
-        Channel.of([ label, files[0] ])
-}
-
 workflow EXPERT {
 
     // --- Step 1: BAM -> FASTQ (+ qs/length filtering) -----------------------
     def (ulk_files, ulk_ext) = splitReadsParam('ulk_reads', params.ulk_reads)
-    ulk_input_ch = mergeIfMultiple('ultralong', ulk_files, ulk_ext)
-    ulk_out      = BAM_TO_FASTQ(ulk_input_ch)
+    ulk_input_ch = (ulk_files.size() > 1)
+        ? MERGE_READS_ULK(Channel.of([ 'ultralong', ulk_files, ulk_ext ])).merged
+        : Channel.of([ 'ultralong', ulk_files[0] ])
+    ulk_out      = BAM_TO_FASTQ_ULK(ulk_input_ch)
     ulk_fastq    = ulk_out.fastq.map { label, fastq -> fastq }
 
     if (params.porec_reads) {
         def (porec_files, porec_ext) = splitReadsParam('porec_reads', params.porec_reads)
-        porec_input_ch  = mergeIfMultiple('porec', porec_files, porec_ext)
-        porec_out       = BAM_TO_FASTQ(porec_input_ch)
+        porec_input_ch = (porec_files.size() > 1)
+            ? MERGE_READS_POREC(Channel.of([ 'porec', porec_files, porec_ext ])).merged
+            : Channel.of([ 'porec', porec_files[0] ])
+        porec_out       = BAM_TO_FASTQ_POREC(porec_input_ch)
         porec_fastq_ch  = porec_out.fastq.map { label, fastq -> fastq }
     }
     else {
@@ -56,10 +67,10 @@ workflow EXPERT {
     }
 
     // --- Step 2: read summary / QC (one report per read source) -------------
-    SEQKIT_STATS(ulk_out.fastq)
+    SEQKIT_STATS_ULK(ulk_out.fastq)
 
     if (params.porec_reads) {
-        SEQKIT_STATS(porec_out.fastq)
+        SEQKIT_STATS_POREC(porec_out.fastq)
     }
 
     if (params.plot.toString().toLowerCase() == 'true') {
@@ -68,7 +79,7 @@ workflow EXPERT {
 
     // --- Step 3: Dorado correct (ULK only, GPU) -----------------------------
     DORADO_CORRECT(ulk_fastq)
-    SEQKIT_STATS(DORADO_CORRECT.out.corrected.map { fasta -> [ 'corrected', fasta ] })
+    SEQKIT_STATS_CORRECTED(DORADO_CORRECT.out.corrected.map { fasta -> [ 'corrected', fasta ] })
 
     // --- Step 4: Verkko assembly (Pore-C or Hi-C branch) --------------------
     if (params.porec_reads) {
@@ -86,8 +97,12 @@ workflow EXPERT {
             error "--hic_reads_1 and --hic_reads_2 must list the same number of comma-separated " +
                   "flowcell/lane files (got ${hic1_files.size()} vs ${hic2_files.size()})"
         }
-        hic1_ch = mergeIfMultiple('hic_r1', hic1_files, hic1_ext).map { label, f -> f }
-        hic2_ch = mergeIfMultiple('hic_r2', hic2_files, hic2_ext).map { label, f -> f }
+        hic1_ch = (hic1_files.size() > 1)
+            ? MERGE_READS_HIC_R1(Channel.of([ 'hic_r1', hic1_files, hic1_ext ])).merged.map { label, f -> f }
+            : Channel.of(hic1_files[0])
+        hic2_ch = (hic2_files.size() > 1)
+            ? MERGE_READS_HIC_R2(Channel.of([ 'hic_r2', hic2_files, hic2_ext ])).merged.map { label, f -> f }
+            : Channel.of(hic2_files[0])
 
         VERKKO(
             ulk_fastq,

@@ -42,10 +42,12 @@ process BAM_TO_FASTQ {
 }
 
 // MERGE_READS
-// Merges multiple per-flowcell files into one (e.g. 2-3 ULK flowcells run separately).
-// Only invoked when a comma-separated --*_reads value resolves to more than one file — see
-// the mergeIfMultiple() helper in workflows/expert.nf. All files in the list must be the same
-// type (all BAM, or all FASTQ/FASTQ.GZ); that's validated before this process is called.
+// Merges multiple per-flowcell files into one (e.g. 2-3 ULK flowcells run separately). Only
+// invoked when a comma-separated --*_reads value resolves to more than one file — see
+// workflows/expert.nf, which imports this once per read source (MERGE_READS_ULK,
+// MERGE_READS_POREC, MERGE_READS_HIC_R1, MERGE_READS_HIC_R2 — DSL2 forbids invoking the same
+// process twice in one workflow scope). All files in one source's list must be the same type
+// (all BAM, or all FASTQ/FASTQ.GZ); that's validated before this process is called.
 
 process MERGE_READS {
     tag "${params.sample}:${label}"

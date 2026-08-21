@@ -118,7 +118,11 @@ list of files (e.g. 2-3 ULK flowcells run separately). Rules:
   BAM, `cat` for FASTQ/FASTQ.GZ — gzip streams concatenate cleanly). Exactly one file → passed
   through untouched, no merge process is invoked.
 - `--hic_reads_1` and `--hic_reads_2` lists must have matching lengths (validated in `main.nf`).
-- See `MERGE_READS` in §5 and the `splitReadsParam`/`mergeIfMultiple` helpers in `workflows/expert.nf`.
+- See `MERGE_READS` in §5 and the `splitReadsParam` helper in `workflows/expert.nf`. Nextflow
+  DSL2 forbids invoking the same process twice in one workflow scope, so `MERGE_READS`,
+  `BAM_TO_FASTQ`, and `SEQKIT_STATS` are each imported once per read source with `include { X as
+  X_LABEL }` (e.g. `MERGE_READS_ULK`, `MERGE_READS_POREC`, `MERGE_READS_HIC_R1`,
+  `MERGE_READS_HIC_R2`) rather than called multiple times under one name.
 
 ---
 
@@ -194,9 +198,10 @@ process MERGE_READS {
 - Same `-@ ${task.cpus}` / `params.threads` wiring as `BAM_TO_FASTQ`.
 
 #### `BAM_TO_FASTQ` (modules/local/common.nf)
-Reused for both ULK and Pore-C. A `label` string ("ultralong" / "porec") drives the output name
-**and** picks the length threshold (`--min_len_ulk` vs `--min_len_porec`); the qscore threshold
-(`--min_qs`) is shared.
+Reused for both ULK and Pore-C — imported as `BAM_TO_FASTQ_ULK` / `BAM_TO_FASTQ_POREC` in
+`expert.nf` (see the multi-flowcell note in §3). A `label` string ("ultralong" / "porec") drives
+the output name **and** picks the length threshold (`--min_len_ulk` vs `--min_len_porec`); the
+qscore threshold (`--min_qs`) is shared.
 
 ```groovy
 process BAM_TO_FASTQ {
@@ -232,8 +237,10 @@ process BAM_TO_FASTQ {
 ### `qc.nf` — read summary / QC
 
 #### `SEQKIT_STATS` (modules/local/qc.nf)
-Called once per read source from `expert.nf` — ULK, Pore-C (if present), and the
-Dorado-corrected reads — so each gets its own report rather than one combined file. `label`
+Imported once per read source in `expert.nf` — `SEQKIT_STATS_ULK`, `SEQKIT_STATS_POREC`,
+`SEQKIT_STATS_CORRECTED` (DSL2 forbids invoking the same process name twice in one workflow
+scope; see the multi-flowcell note in §3) — so ULK, Pore-C (if present), and the
+Dorado-corrected reads each get their own report rather than one combined file. `label`
 ("ultralong" / "porec" / "corrected") drives the output filename, same pattern as `BAM_TO_FASTQ`.
 ```groovy
 process SEQKIT_STATS {
