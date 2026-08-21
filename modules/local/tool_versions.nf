@@ -5,7 +5,7 @@
 // (modules/local/software_versions.nf) collects all of their outputs into one combined JSON.
 
 // SAMTOOLS_VERSION
-// Same container as BAM_TO_FASTQ / MERGE_READS (modules/local/common.nf).
+// Same container as BAM_TO_FASTQ (modules/local/common.nf).
 
 process SAMTOOLS_VERSION {
     tag "${params.sample}"

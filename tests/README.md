@@ -49,7 +49,7 @@ nf-test test tests/modules/local/bam_to_fastq.nf.test   # run a single file
 
 | Test file | Process | Notes |
 |---|---|---|
-| `modules/local/bam_to_fastq.nf.test` | `BAM_TO_FASTQ` | filtering on/off + FASTQ passthrough |
+| `modules/local/bam_to_fastq.nf.test` | `BAM_TO_FASTQ` | filtering on/off, FASTQ passthrough, multi-file merge, empty-output failure |
 | `modules/local/seqkit_stats.nf.test` | `SEQKIT_STATS` | per-source read stats (ULK example) |
 | `modules/local/nanoplot.nf.test` | `NANOPLOT` | ULK FASTQ report |
 | `modules/local/dorado_correct.nf.test` | `DORADO_CORRECT` | tagged `gpu`; excluded from standard CI runners |

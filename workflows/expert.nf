@@ -1,21 +1,19 @@
 // EXPERT workflow
-// samtools (BAM -> FASTQ, filtered) -> QC (seqkit stats [+ NanoPlot]) -> Dorado correct (GPU,
-// ULK only) -> Verkko assembly (Pore-C or Hi-C branch). Reads-type is inferred from which of
-// params.porec_reads / params.hic_reads_1+2 is set; main.nf has already validated that
+// samtools (merge + BAM -> FASTQ, filtered) -> QC (seqkit stats [+ NanoPlot]) -> Dorado correct
+// (GPU, ULK only) -> Verkko assembly (Pore-C or Hi-C branch). Reads-type is inferred from which
+// of params.porec_reads / params.hic_reads_1+2 is set; main.nf has already validated that
 // exactly one of those is populated before this workflow is invoked.
 //
 // Nextflow DSL2 only allows a process to be *invoked* once per workflow scope — fine for
-// VERKKO/NANOPLOT (mutually-exclusive/conditional single call sites), but BAM_TO_FASTQ,
-// MERGE_READS, and SEQKIT_STATS each need to run on more than one read source in the same run
-// (e.g. ULK + corrected always both run), so each is imported once per source with `as` and
-// called under that distinct name.
+// VERKKO/NANOPLOT (mutually-exclusive/conditional single call sites), but BAM_TO_FASTQ and
+// SEQKIT_STATS each need to run on more than one read source in the same run (e.g. ULK +
+// corrected always both run), so each is imported once per source with `as` and called under
+// that distinct name.
 
 include { BAM_TO_FASTQ as BAM_TO_FASTQ_ULK       } from '../modules/local/common.nf'
 include { BAM_TO_FASTQ as BAM_TO_FASTQ_POREC     } from '../modules/local/common.nf'
-include { MERGE_READS  as MERGE_READS_ULK        } from '../modules/local/common.nf'
-include { MERGE_READS  as MERGE_READS_POREC      } from '../modules/local/common.nf'
-include { MERGE_READS  as MERGE_READS_HIC_R1     } from '../modules/local/common.nf'
-include { MERGE_READS  as MERGE_READS_HIC_R2     } from '../modules/local/common.nf'
+include { BAM_TO_FASTQ as BAM_TO_FASTQ_HIC_R1    } from '../modules/local/common.nf'
+include { BAM_TO_FASTQ as BAM_TO_FASTQ_HIC_R2    } from '../modules/local/common.nf'
 
 include { SEQKIT_STATS as SEQKIT_STATS_ULK       } from '../modules/local/qc.nf'
 include { SEQKIT_STATS as SEQKIT_STATS_POREC     } from '../modules/local/qc.nf'
@@ -28,7 +26,7 @@ include { SOFTWARE_VERSIONS } from '../modules/local/software_versions.nf'
 
 // Splits a comma-separated --*_reads value into files + a shared extension ('bam' | 'fastq' |
 // 'fastq.gz'). Multiple flowcells per input (e.g. 2-3 ULK flowcells) are common; they must all
-// be the same file type so they can be merged.
+// be the same file type so BAM_TO_FASTQ can merge them.
 def splitReadsParam(String paramName, String pathsStr) {
     def files = pathsStr.split(',').collect { file(it.trim()) }
     def exts  = files.collect { f ->
@@ -46,20 +44,14 @@ def splitReadsParam(String paramName, String pathsStr) {
 
 workflow EXPERT {
 
-    // --- Step 1: BAM -> FASTQ (+ qs/length filtering) -----------------------
+    // --- Step 1: reads -> FASTQ (merge multi-flowcell + qs/length filter, one step) ---------
     def (ulk_files, ulk_ext) = splitReadsParam('ulk_reads', params.ulk_reads)
-    ulk_input_ch = (ulk_files.size() > 1)
-        ? MERGE_READS_ULK(Channel.of([ 'ultralong', ulk_files, ulk_ext ])).merged
-        : Channel.of([ 'ultralong', ulk_files[0] ])
-    ulk_out      = BAM_TO_FASTQ_ULK(ulk_input_ch)
-    ulk_fastq    = ulk_out.fastq.map { label, fastq -> fastq }
+    ulk_out   = BAM_TO_FASTQ_ULK(Channel.of([ 'ultralong', ulk_files, ulk_ext ]))
+    ulk_fastq = ulk_out.fastq.map { label, fastq -> fastq }
 
     if (params.porec_reads) {
         def (porec_files, porec_ext) = splitReadsParam('porec_reads', params.porec_reads)
-        porec_input_ch = (porec_files.size() > 1)
-            ? MERGE_READS_POREC(Channel.of([ 'porec', porec_files, porec_ext ])).merged
-            : Channel.of([ 'porec', porec_files[0] ])
-        porec_out       = BAM_TO_FASTQ_POREC(porec_input_ch)
+        porec_out       = BAM_TO_FASTQ_POREC(Channel.of([ 'porec', porec_files, porec_ext ]))
         porec_fastq_ch  = porec_out.fastq.map { label, fastq -> fastq }
     }
     else {
@@ -97,12 +89,8 @@ workflow EXPERT {
             error "--hic_reads_1 and --hic_reads_2 must list the same number of comma-separated " +
                   "flowcell/lane files (got ${hic1_files.size()} vs ${hic2_files.size()})"
         }
-        hic1_ch = (hic1_files.size() > 1)
-            ? MERGE_READS_HIC_R1(Channel.of([ 'hic_r1', hic1_files, hic1_ext ])).merged.map { label, f -> f }
-            : Channel.of(hic1_files[0])
-        hic2_ch = (hic2_files.size() > 1)
-            ? MERGE_READS_HIC_R2(Channel.of([ 'hic_r2', hic2_files, hic2_ext ])).merged.map { label, f -> f }
-            : Channel.of(hic2_files[0])
+        hic1_ch = BAM_TO_FASTQ_HIC_R1(Channel.of([ 'hic_r1', hic1_files, hic1_ext ])).fastq.map { label, f -> f }
+        hic2_ch = BAM_TO_FASTQ_HIC_R2(Channel.of([ 'hic_r2', hic2_files, hic2_ext ])).fastq.map { label, f -> f }
 
         VERKKO(
             ulk_fastq,

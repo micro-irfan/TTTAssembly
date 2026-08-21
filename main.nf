@@ -37,9 +37,11 @@ def helpMessage() {
       --mode            expert | scalable                         (default: ${params.mode})
       --sample          Sample name, prefixes all output filenames (default: ${params.sample})
       --filtering       true | false — apply qs/length filter on BAM->FASTQ (default: ${params.filtering})
-      --min_qs          Filter threshold, mean read qscore, both ULK and Pore-C (default: ${params.min_qs})
+      --min_qs          Filter threshold, mean read qscore, ULK only — Pore-C has no qscore
+                        filter (default: ${params.min_qs})
       --min_len_ulk     Filter threshold, ULK read length in bp (default: ${params.min_len_ulk})
-      --min_len_porec   Filter threshold, Pore-C read length in bp (default: ${params.min_len_porec})
+      --min_len_porec   Filter threshold, Pore-C read length in bp; length-only, no qscore
+                        filter (default: ${params.min_len_porec})
       --plot            Also run NanoPlot in the QC step (default: ${params.plot}). seqkit
                         stats always runs regardless.
       --threads         Default CPUs per process (default: ${params.threads})

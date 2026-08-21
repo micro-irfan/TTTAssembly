@@ -40,15 +40,16 @@ These come from the ONT protocol PDF. Reproduce them faithfully.
 
 **Step 1 — BAM → FASTQ conversion + quality/length filtering**
 ```bash
-# ULK (ultra-long) reads — higher length floor, this is what "ultra-long" means
+# ULK (ultra-long) reads — qscore + length floor, this is what "ultra-long" means
 samtools view -u -e '[qs]>=10 && length(seq)>=10000' <input_ulk.bam>   | samtools fastq > ultralongreads.fastq
-# Pore-C reads — same qscore floor, lower length floor
-samtools view -u -e '[qs]>=10 && length(seq)>=1000' <input_porec.bam> | samtools fastq > porec.fastq
+# Pore-C reads — length-only, no qscore floor
+samtools view -u -e 'length(seq)>=500' <input_porec.bam> | samtools fastq > porec.fastq
 ```
 - When `--filtering false`, drop the `-e '...'` expression and do a plain conversion
   (`samtools fastq <in.bam> > out.fastq`). See §5 for the exact rule.
 - Length thresholds differ by read type: `--min_len_ulk` (default `10000`) vs `--min_len_porec`
-  (default `1000`); `--min_qs` (default `10`) is shared by both. See §3.
+  (default `500`). `--min_qs` (default `10`) applies to **ULK only** — Pore-C has no qscore
+  filter, length-only. See §3.
 - Thread both `samtools view` and `samtools fastq` with `-@ ${task.cpus}`.
 - Hi-C reads are **already FASTQ** (`--hic_reads_1/2`); they are **not** converted here.
 
@@ -97,9 +98,9 @@ reads go to `--hifi`, and `--no-correction` tells Verkko not to re-correct them.
 | `--threads` | `8` | Default CPUs per process (maps to `task.cpus`). |
 | `--dorado_device` | `cuda:0` | Device string for `dorado correct -x`. |
 | `--dorado_path` | `null` | Override path to the `dorado` binary; defaults to `dorado` on `PATH`. Mainly for `-profile conda` (no dorado conda package). |
-| `--min_qs` | `10` | Filter threshold, mean read qscore. Shared by ULK and Pore-C. |
+| `--min_qs` | `10` | Filter threshold, mean read qscore. **ULK only** — Pore-C has no qscore filter. |
 | `--min_len_ulk` | `10000` | Filter threshold, ULK read length (bp). |
-| `--min_len_porec` | `1000` | Filter threshold, Pore-C read length (bp). |
+| `--min_len_porec` | `500` | Filter threshold, Pore-C read length (bp). Length-only (no qscore filter). |
 | `--plot` | `false` | Also run NanoPlot in the QC step (seqkit stats always runs regardless). Opt-in. |
 
 ### Reads-type inference (do not add a separate flag)
@@ -118,15 +119,18 @@ neither Pore-C nor Hi-C provided; both provided; a Hi-C file provided without it
 list of files (e.g. 2-3 ULK flowcells run separately). Rules:
 - All entries in one list must be the **same file type** (all `.bam`, or all `.fastq`/`.fastq.gz`)
   — mixed types fail with a clear error before any process launches.
-- More than one file for a given input → merge with `MERGE_READS` first (`samtools merge` for
-  BAM, `cat` for FASTQ/FASTQ.GZ — gzip streams concatenate cleanly). Exactly one file → passed
-  through untouched, no merge process is invoked.
+- `BAM_TO_FASTQ` (§5) does the merge itself — for BAM input it pipes `samtools merge` straight
+  into the filter/convert step (`-o -` / stdin), so a multi-flowcell merge never touches an
+  intermediate BAM on disk. Exactly one file skips `samtools merge` entirely.
 - `--hic_reads_1` and `--hic_reads_2` lists must have matching lengths (validated in `main.nf`).
-- See `MERGE_READS` in §5 and the `splitReadsParam` helper in `workflows/expert.nf`. Nextflow
-  DSL2 forbids invoking the same process twice in one workflow scope, so `MERGE_READS`,
-  `BAM_TO_FASTQ`, and `SEQKIT_STATS` are each imported once per read source with `include { X as
-  X_LABEL }` (e.g. `MERGE_READS_ULK`, `MERGE_READS_POREC`, `MERGE_READS_HIC_R1`,
-  `MERGE_READS_HIC_R2`) rather than called multiple times under one name.
+- See `BAM_TO_FASTQ` in §5 and the `splitReadsParam` helper in `workflows/expert.nf`. Nextflow
+  DSL2 forbids invoking the same process twice in one workflow scope, so `BAM_TO_FASTQ` and
+  `SEQKIT_STATS` are each imported once per read source with `include { X as X_LABEL }` (e.g.
+  `BAM_TO_FASTQ_ULK`, `BAM_TO_FASTQ_POREC`, `BAM_TO_FASTQ_HIC_R1`, `BAM_TO_FASTQ_HIC_R2`) rather
+  than called multiple times under one name.
+- `BAM_TO_FASTQ` fails the task (`exit 1`) if its output FASTQ ends up empty — a too-strict
+  filter or an empty/corrupt input source stops the pipeline immediately (`errorStrategy =
+  'terminate'`) instead of silently reaching Dorado/Verkko with no reads.
 
 ---
 
@@ -140,7 +144,7 @@ ont-t2t-assembly/
 ├── nextflow.config               # params, singularity profile, per-process resources (ALREADY WRITTEN)
 ├── modules/
 │   └── local/
-│       ├── common.nf             # BAM_TO_FASTQ + MERGE_READS (samtools-based read processing)
+│       ├── common.nf             # BAM_TO_FASTQ (samtools-based read merge + filter/convert)
 │       ├── qc.nf                 # SEQKIT_STATS + NANOPLOT (NANOPLOT gated by --plot)
 │       ├── dorado_correct.nf     # DORADO_CORRECT (GPU)
 │       ├── verkko.nf             # VERKKO (porec + hic handled with optional inputs)
@@ -181,42 +185,24 @@ process definition regardless of what it's invoked as. Labels in use: `samtools`
 Related processes that share a label are grouped into one file (`common.nf`, `qc.nf`,
 `tool_versions.nf`) rather than one-process-per-file.
 
-### `common.nf` — samtools-based read processing
-
-#### `MERGE_READS` (modules/local/common.nf)
-Merges a comma-separated multi-flowcell input into one file, before `BAM_TO_FASTQ`/`VERKKO`.
-Only invoked when there's more than one file for a given `--*_reads` param (see §3).
-```groovy
-process MERGE_READS {
-    tag "${params.sample}:${label}"
-    label 'samtools'
-    publishDir "${params.output}/merged", mode: 'copy'
-
-    input:
-    tuple val(label), path(reads), val(ext)
-
-    output:
-    tuple val(label), path("${params.sample}.${label}.merged.${ext}"), emit: merged
-
-    script:
-    def out = "${params.sample}.${label}.merged.${ext}"
-    if (ext == 'bam')
-        "samtools merge -@ ${task.cpus} -f ${out} ${reads}"
-    else
-        "cat ${reads} > ${out}"
-}
-```
-- Reuses the `images/samtools.sif` image (both `samtools merge` and `cat` are available there)
-  — no new container.
-- `ext` is determined by the caller (`splitReadsParam()` in `workflows/expert.nf`) from the file
-  extensions, not detected inside the process.
-- Same `-@ ${task.cpus}` / `params.threads` wiring as `BAM_TO_FASTQ`.
+### `common.nf` — samtools-based read merge + filter/convert
 
 #### `BAM_TO_FASTQ` (modules/local/common.nf)
-Reused for both ULK and Pore-C — imported as `BAM_TO_FASTQ_ULK` / `BAM_TO_FASTQ_POREC` in
-`expert.nf` (see the multi-flowcell note in §3). A `label` string ("ultralong" / "porec") drives
-the output name **and** picks the length threshold (`--min_len_ulk` vs `--min_len_porec`); the
-qscore threshold (`--min_qs`) is shared.
+One process handles merge (multi-flowcell), BAM→FASTQ conversion, and the qs/length filter —
+merge and filter/convert used to be two processes (`MERGE_READS` → `BAM_TO_FASTQ`), which meant
+a multi-flowcell merge wrote a full intermediate BAM to disk before `BAM_TO_FASTQ` read it back
+in. Now `samtools merge` streams straight into `samtools view`/`samtools fastq` via a pipe
+(`-o -` / stdin) — no intermediate file, for any number of input BAMs.
+
+Reused for ULK, Pore-C, and Hi-C R1/R2 — imported as `BAM_TO_FASTQ_ULK` / `BAM_TO_FASTQ_POREC` /
+`BAM_TO_FASTQ_HIC_R1` / `BAM_TO_FASTQ_HIC_R2` in `expert.nf` (see the multi-flowcell note in
+§3). A `label` string drives the output name, the length threshold for BAM input
+(`--min_len_ulk` vs `--min_len_porec`), and whether the qscore filter applies (ULK: qscore +
+length; Pore-C: length-only, no `--min_qs`). Hi-C reads are already FASTQ, so they only ever
+take the merge-only path — filtering never applies to non-BAM input. The caller
+(`splitReadsParam()` in `workflows/expert.nf`) determines `ext` (`'bam'` | `'fastq'` |
+`'fastq.gz'`) from the file extensions, validated uniform across one source's file list, before
+this process is called.
 
 ```groovy
 process BAM_TO_FASTQ {
@@ -225,23 +211,44 @@ process BAM_TO_FASTQ {
     publishDir "${params.output}/fastq", mode: 'copy'
 
     input:
-    tuple val(label), path(bam)
+    tuple val(label), path(reads), val(ext)
 
     output:
     tuple val(label), path("${params.sample}.${label}.fastq"), emit: fastq
 
     script:
-    def out     = "${params.sample}.${label}.fastq"
-    def min_len = (label == 'ultralong') ? params.min_len_ulk : params.min_len_porec
-    if (params.filtering.toString().toLowerCase() == 'true')
-        """
-        samtools view -u -@ ${task.cpus} -e '[qs]>=${params.min_qs} && length(seq)>=${min_len}' ${bam} \
-            | samtools fastq -@ ${task.cpus} > ${out}
-        """
+    def out    = "${params.sample}.${label}.fastq"
+    def is_bam = (ext == 'bam')
+    def multi  = (reads instanceof List) && reads.size() > 1
+    def min_len     = (label == 'ultralong') ? params.min_len_ulk : params.min_len_porec
+    def filter_expr = (label == 'ultralong')
+        ? "[qs]>=${params.min_qs} && length(seq)>=${min_len}"
+        : "length(seq)>=${min_len}"
+    def do_filter = params.filtering.toString().toLowerCase() == 'true'
+    def merge_cmd = "samtools merge -u -@ ${task.cpus} -o - ${reads}"
+
+    def cmd
+    if (is_bam && multi && do_filter)
+        cmd = "${merge_cmd} | samtools view -u -@ ${task.cpus} -e '${filter_expr}' - | samtools fastq -@ ${task.cpus} - > ${out}"
+    else if (is_bam && multi)
+        cmd = "${merge_cmd} | samtools fastq -@ ${task.cpus} - > ${out}"
+    else if (is_bam && do_filter)
+        cmd = "samtools view -u -@ ${task.cpus} -e '${filter_expr}' ${reads} | samtools fastq -@ ${task.cpus} > ${out}"
+    else if (is_bam)
+        cmd = "samtools fastq -@ ${task.cpus} ${reads} > ${out}"
+    else if (ext == 'fastq.gz')
+        cmd = "zcat ${reads} > ${out}"       // zcat merges + decompresses N files in one pass
     else
-        """
-        samtools fastq -@ ${task.cpus} ${bam} > ${out}
-        """
+        cmd = "cat ${reads} > ${out}"
+
+    """
+    ${cmd}
+
+    [ -s ${out} ] || {
+        echo "ERROR: ${out} is empty (label=${label})..." >&2
+        exit 1
+    }
+    """
 }
 ```
 - The samtools filter expression contains no `$`, so single-quoting it inside the double-quoted
@@ -249,6 +256,11 @@ process BAM_TO_FASTQ {
 - Needs samtools ≥ 1.16 for the `-e` expression grammar (`[qs]`, `length(seq)`). Our image is 1.23.1.
 - `-@ ${task.cpus}` comes from the `cpus` directive in `nextflow.config` (`params.threads`) — no
   hard-coded thread count in the module.
+- A single input file (`!multi`) skips `samtools merge` entirely — no point re-muxing one BAM.
+- `[ -s ${out} ]` (POSIX `test -s`: exists and non-empty) fails the task with a clear message
+  if filtering/conversion produces an empty FASTQ, instead of letting an empty read set reach
+  Dorado/Verkko silently. `errorStrategy = 'terminate'` (set in `nextflow.config`) stops the
+  whole run as soon as this — or any — task fails.
 
 ### `qc.nf` — read summary / QC
 
@@ -354,7 +366,7 @@ ran), plus a combiner. Each carries its tool's label **and** `quick` (cuts cpus/
 §7/`nextflow.config`). All have no pipeline inputs — they run `<tool> --version` once per
 invocation:
 
-- `SAMTOOLS_VERSION` — `label 'samtools'; label 'quick'` (same env as `BAM_TO_FASTQ`/`MERGE_READS`)
+- `SAMTOOLS_VERSION` — `label 'samtools'; label 'quick'` (same env as `BAM_TO_FASTQ`)
 - `QC_VERSIONS` — `label 'qc'; label 'quick'`; captures both seqkit and NanoPlot in one process
   (same env as `SEQKIT_STATS`/`NANOPLOT`)
 - `DORADO_VERSION` — `label 'dorado'; label 'quick'`, deliberately **without** `label 'gpu'`: a
@@ -392,13 +404,13 @@ wants to compare ULK vs Pore-C side by side — not needed now.
 
 Two mutually-exclusive engines, selected with `-profile singularity` (default) or `-profile
 conda`. `nextflow.config` assigns these by `withLabel:` (see §5) rather than `withName:`, so it
-doesn't matter that `BAM_TO_FASTQ`, `MERGE_READS`, and `SEQKIT_STATS` are each imported under
-several aliases in `workflows/expert.nf` (§3's multi-flowcell note) — the label lives on the
+doesn't matter that `BAM_TO_FASTQ` and `SEQKIT_STATS` are each imported under several aliases in
+`workflows/expert.nf` (§3's multi-flowcell note) — the label lives on the
 process definition, not the alias.
 
 | Process | Singularity image | Conda env | Base / install |
 |---|---|---|---|
-| `BAM_TO_FASTQ`, `MERGE_READS`, `SAMTOOLS_VERSION` | `images/samtools.sif` | `conda/samtools.yml` | ubuntu, samtools built from source / bioconda |
+| `BAM_TO_FASTQ`, `SAMTOOLS_VERSION` | `images/samtools.sif` | `conda/samtools.yml` | ubuntu, samtools built from source / bioconda |
 | `SEQKIT_STATS`, `NANOPLOT`, `QC_VERSIONS`, `SOFTWARE_VERSIONS` | `images/qc.sif` | `conda/qc.yml` | miniforge, `seqkit` + `nanoplot`, both bioconda |
 | `DORADO_CORRECT`, `DORADO_VERSION` | `images/dorado.sif` | *(none — see below)* | `nvidia/cuda` runtime + Dorado CDN binary |
 | `VERKKO`, `VERKKO_VERSION` | `images/verkko.sif` | `conda/verkko.yml` | miniforge, `verkko` from bioconda |

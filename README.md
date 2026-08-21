@@ -130,8 +130,13 @@ comma-separated list of files — useful since ULK runs are typically split acro
 ```
 
 All files in one list must be the same type (all `.bam`, or all `.fastq`/`.fastq.gz`); they're
-merged (`samtools merge` for BAM, concatenation for FASTQ) before the rest of the pipeline runs.
-`--hic_reads_1` and `--hic_reads_2` must list the same number of files.
+merged before the rest of the pipeline runs — `samtools merge` pipes straight into the
+qs/length filter for BAM, `cat`/`zcat` for FASTQ, so no intermediate merged file is ever
+written to disk. `--hic_reads_1` and `--hic_reads_2` must list the same number of files.
+
+If the qs/length filter (or the merge itself) leaves zero reads for a source, the pipeline
+fails immediately with a clear error rather than continuing on to Dorado/Verkko with an empty
+FASTQ.
 
 ## 3. Outputs
 
@@ -139,8 +144,8 @@ Published under `--output` (default `results/`):
 
 ```
 results/
-├── fastq/          # ${sample}.ultralong.fastq, ${sample}.porec.fastq
-├── merged/           # ${sample}.<label>.merged.<ext> — only when a --*_reads input listed multiple flowcells
+├── fastq/          # ${sample}.ultralong.fastq, ${sample}.porec.fastq, ${sample}.hic_r1/r2.fastq — merge
+│                    # (multi-flowcell) + filter/convert happen in one step, no intermediate file
 ├── qc/              # ${sample}.ultralong.read_stats.tsv, ${sample}.porec.read_stats.tsv (if Pore-C),
 │                    # ${sample}.corrected.read_stats.tsv, nanoplot_${sample}/ (with --plot)
 ├── corrected/        # ${sample}.doradocorrect.fasta
