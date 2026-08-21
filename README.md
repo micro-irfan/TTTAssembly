@@ -1,8 +1,8 @@
-# ont-t2t-assembly
+# TTTAssembly
 
-Nextflow (DSL2) pipeline reproducing the Oxford Nanopore "expert telomere-to-telomere (T2T)"
-downstream analysis workflow for `SQK-ULK114` ultra-long reads combined with Pore-C or Hi-C
-data. Assembly is done with **Verkko**. See [CLAUDE.md](CLAUDE.md) for the full spec.
+TTT (Telomere To Telomere) Assembly is a Nextflow (DSL2) pipeline wrapping the Oxford Nanopore 
+T2T suggested analysis workflow for `SQK-ULK114` ultra-long reads combined with Pore-C or Hi-C data.
+Assembly is done with **Verkko**. See [CLAUDE.md](CLAUDE.md) for the full spec.
 
 Two modes, selected with `--mode`:
 - `expert` — implemented: samtools (BAM → FASTQ, filtered) → QC (seqkit stats [+ NanoPlot with
@@ -29,11 +29,8 @@ singularity build images/hifiasm.sif  singularity/hifiasm/hifiasm.def   # not us
 singularity build images/qc.sif       singularity/qc/qc.def
 ```
 
-(`apptainer build ...` works identically if that's what's installed.) Building most of these
-requires root or `--fakeroot` (`singularity build --fakeroot ...`), since they install system
-packages via `apt-get`/`mamba` in `%post`. `nextflow.config` points each process at its `.sif`
-under `images/` by exact path (relative to the pipeline directory), so build them there before
-running.
+`nextflow.config` points each process at its `.sif` under `images/` by exact path (relative 
+to the pipeline directory), so build them there before running.
 
 Verify GPU access for Dorado:
 
@@ -68,19 +65,15 @@ export PATH="$HOME/opt/dorado-${DORADO_VERSION}-linux-x64/bin:$PATH"   # add to 
 dorado --version
 ```
 
-Don't want to touch `PATH`? Point the pipeline at the binary directly instead:
+Alternatively, point the pipeline at the binary directly instead of adjusting `PATH`. 
+`--dorado_path` overrides `dorado` wherever it's invoked (`DORADO_CORRECT` and `DORADO_VERSION`,
+under any profile).
 
 ```bash
 --dorado_path "$HOME/opt/dorado-${DORADO_VERSION}-linux-x64/bin/dorado"
 ```
 
-`--dorado_path` overrides `dorado` wherever it's invoked (`DORADO_CORRECT` and `DORADO_VERSION`,
-under any profile). If it's not found — a bad `--dorado_path`, or the default `dorado` missing
-from `PATH` — the pipeline fails fast with a clear "dorado is not installed" error instead of a
-raw shell "command not found".
-
-Then run with `-profile conda` in place of `-profile singularity` in any command below —
-`images/` and the `singularity/*.def` builds aren't needed for this path.
+`images/` and the `singularity/*.def` builds aren't needed for `-profile conda`.
 
 ## 2. Run the pipeline
 
