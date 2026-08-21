@@ -225,17 +225,21 @@ process BAM_TO_FASTQ {
         ? "[qs]>=${params.min_qs} && length(seq)>=${min_len}"
         : "length(seq)>=${min_len}"
     def do_filter = params.filtering.toString().toLowerCase() == 'true'
-    def merge_cmd = "samtools merge -u -@ ${task.cpus} -o - ${reads}"
+    // Piped stages run concurrently — split task.cpus across however many are active in this
+    // branch (min 1 each) instead of giving every stage the full task.cpus.
+    def n_stages = is_bam ? ((multi && do_filter) ? 3 : (multi || do_filter) ? 2 : 1) : 1
+    def cpus     = Math.max(task.cpus.intdiv(n_stages) as int, 1)
+    def merge_cmd = "samtools merge -u -@ ${cpus} -o - ${reads}"
 
     def cmd
     if (is_bam && multi && do_filter)
-        cmd = "${merge_cmd} | samtools view -u -@ ${task.cpus} -e '${filter_expr}' - | samtools fastq -@ ${task.cpus} - > ${out}"
+        cmd = "${merge_cmd} | samtools view -u -@ ${cpus} -e '${filter_expr}' - | samtools fastq -@ ${cpus} - > ${out}"
     else if (is_bam && multi)
-        cmd = "${merge_cmd} | samtools fastq -@ ${task.cpus} - > ${out}"
+        cmd = "${merge_cmd} | samtools fastq -@ ${cpus} - > ${out}"
     else if (is_bam && do_filter)
-        cmd = "samtools view -u -@ ${task.cpus} -e '${filter_expr}' ${reads} | samtools fastq -@ ${task.cpus} > ${out}"
+        cmd = "samtools view -u -@ ${cpus} -e '${filter_expr}' ${reads} | samtools fastq -@ ${cpus} > ${out}"
     else if (is_bam)
-        cmd = "samtools fastq -@ ${task.cpus} ${reads} > ${out}"
+        cmd = "samtools fastq -@ ${cpus} ${reads} > ${out}"
     else if (ext == 'fastq.gz')
         cmd = "zcat ${reads} > ${out}"       // zcat merges + decompresses N files in one pass
     else
@@ -254,8 +258,11 @@ process BAM_TO_FASTQ {
 - The samtools filter expression contains no `$`, so single-quoting it inside the double-quoted
   Nextflow script block is safe.
 - Needs samtools ≥ 1.16 for the `-e` expression grammar (`[qs]`, `length(seq)`). Our image is 1.23.1.
-- `-@ ${task.cpus}` comes from the `cpus` directive in `nextflow.config` (`params.threads`) — no
-  hard-coded thread count in the module.
+- Thread count ultimately comes from the `cpus` directive in `nextflow.config`
+  (`params.threads`) — no hard-coded thread count in the module. But since pipe stages run
+  concurrently, `-@ task.cpus` on every stage would ask for up to 3x what Nextflow scheduled
+  for the task (merge | view | fastq); `cpus` (`task.cpus` split evenly across the branch's
+  active stage count, min 1) is used for every `-@` instead.
 - A single input file (`!multi`) skips `samtools merge` entirely — no point re-muxing one BAM.
 - `[ -s ${out} ]` (POSIX `test -s`: exists and non-empty) fails the task with a clear message
   if filtering/conversion produces an empty FASTQ, instead of letting an empty read set reach

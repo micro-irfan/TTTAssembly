@@ -36,19 +36,24 @@ process BAM_TO_FASTQ {
         ? "[qs]>=${params.min_qs} && length(seq)>=${min_len}"
         : "length(seq)>=${min_len}"
     def do_filter = params.filtering.toString().toLowerCase() == 'true'
+    // Piped samtools stages run concurrently, so giving every stage the full task.cpus would
+    // ask for up to 3x what Nextflow scheduled for this task (merge | view | fastq). Split
+    // task.cpus across however many stages are actually active in this branch (min 1 each).
+    def n_stages = is_bam ? ((multi && do_filter) ? 3 : (multi || do_filter) ? 2 : 1) : 1
+    def cpus     = Math.max(task.cpus.intdiv(n_stages) as int, 1)
     // Merging N>1 BAMs streams straight into the filter/convert step (`-o -` / `-` = stdin);
     // a single BAM skips samtools merge entirely (no point re-muxing a single file).
-    def merge_cmd = "samtools merge -u -@ ${task.cpus} -o - ${reads}"
+    def merge_cmd = "samtools merge -u -@ ${cpus} -o - ${reads}"
 
     def cmd
     if (is_bam && multi && do_filter)
-        cmd = "${merge_cmd} | samtools view -u -@ ${task.cpus} -e '${filter_expr}' - | samtools fastq -@ ${task.cpus} - > ${out}"
+        cmd = "${merge_cmd} | samtools view -u -@ ${cpus} -e '${filter_expr}' - | samtools fastq -@ ${cpus} - > ${out}"
     else if (is_bam && multi)
-        cmd = "${merge_cmd} | samtools fastq -@ ${task.cpus} - > ${out}"
+        cmd = "${merge_cmd} | samtools fastq -@ ${cpus} - > ${out}"
     else if (is_bam && do_filter)
-        cmd = "samtools view -u -@ ${task.cpus} -e '${filter_expr}' ${reads} | samtools fastq -@ ${task.cpus} > ${out}"
+        cmd = "samtools view -u -@ ${cpus} -e '${filter_expr}' ${reads} | samtools fastq -@ ${cpus} > ${out}"
     else if (is_bam)
-        cmd = "samtools fastq -@ ${task.cpus} ${reads} > ${out}"
+        cmd = "samtools fastq -@ ${cpus} ${reads} > ${out}"
     else if (is_gz)
         // zcat accepts multiple files, decompressing+concatenating in one pass — merge and
         // decompress together, same as the BAM branches never touch an intermediate file.
