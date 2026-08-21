@@ -8,6 +8,7 @@
 
 process BAM_TO_FASTQ {
     tag "${params.sample}:${label}"
+    label 'samtools'
     publishDir "${params.output}/fastq", mode: 'copy'
 
     input:
@@ -51,6 +52,7 @@ process BAM_TO_FASTQ {
 
 process MERGE_READS {
     tag "${params.sample}:${label}"
+    label 'samtools'
     publishDir "${params.output}/merged", mode: 'copy'
 
     input:

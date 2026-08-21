@@ -44,6 +44,8 @@ def helpMessage() {
                         stats always runs regardless.
       --threads         Default CPUs per process (default: ${params.threads})
       --dorado_device   Device string for `dorado correct -x` (default: ${params.dorado_device})
+      --dorado_path     Override path to the dorado binary (default: 'dorado' on PATH). Mainly
+                        for -profile conda, which has no dorado conda package.
       --output          Output directory (default: ${params.output})
       --help            Show this message and exit.
 

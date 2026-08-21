@@ -4,6 +4,7 @@
 
 process VERKKO {
     tag "${params.sample}"
+    label 'verkko'
     publishDir "${params.output}", mode: 'copy'
 
     input:

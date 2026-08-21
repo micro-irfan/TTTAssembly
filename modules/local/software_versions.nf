@@ -5,6 +5,8 @@
 
 process SOFTWARE_VERSIONS {
     tag "${params.sample}"
+    label 'qc'
+    label 'quick'
     publishDir "${params.output}", mode: 'copy'
 
     input:

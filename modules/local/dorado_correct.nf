@@ -4,6 +4,8 @@
 
 process DORADO_CORRECT {
     tag "${params.sample}"
+    label 'dorado'
+    label 'gpu'
     publishDir "${params.output}/corrected", mode: 'copy'
 
     input:
@@ -19,7 +21,15 @@ process DORADO_CORRECT {
     // NOTE: params.dorado_model_path is intentionally not declared in nextflow.config; leaving
     // it undeclared keeps it null (network fetch) unless the user opts in on the CLI.
     def model_path_arg = params.dorado_model_path ? "--model-path ${params.dorado_model_path}" : ''
+    // --dorado_path overrides which `dorado` binary is invoked (e.g. a manual install under
+    // -profile conda, which has no dorado conda package — see README.md "Alternative: Conda").
+    // Defaults to plain 'dorado', resolved via PATH.
+    def dorado_bin = params.dorado_path ?: 'dorado'
     """
-    dorado correct -x ${params.dorado_device} -t ${task.cpus} ${model_path_arg} ${ulk_fastq} > ${params.sample}.doradocorrect.fasta
+    command -v ${dorado_bin} >/dev/null 2>&1 || {
+        echo "ERROR: dorado is not installed (or not on PATH): '${dorado_bin}' not found. Install dorado or pass --dorado_path /path/to/dorado — see README.md 'Alternative: Conda'." >&2
+        exit 1
+    }
+    ${dorado_bin} correct -x ${params.dorado_device} -t ${task.cpus} ${model_path_arg} ${ulk_fastq} > ${params.sample}.doradocorrect.fasta
     """
 }

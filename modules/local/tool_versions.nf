@@ -9,6 +9,8 @@
 
 process SAMTOOLS_VERSION {
     tag "${params.sample}"
+    label 'samtools'
+    label 'quick'
 
     output:
     path "samtools.version.txt", emit: version
@@ -25,6 +27,8 @@ process SAMTOOLS_VERSION {
 
 process QC_VERSIONS {
     tag "${params.sample}"
+    label 'qc'
+    label 'quick'
 
     output:
     path "*.version.txt", emit: versions
@@ -42,13 +46,21 @@ process QC_VERSIONS {
 
 process DORADO_VERSION {
     tag "${params.sample}"
+    label 'dorado'
+    label 'quick'
 
     output:
     path "dorado.version.txt", emit: version
 
     script:
+    // Same --dorado_path override as DORADO_CORRECT (modules/local/dorado_correct.nf).
+    def dorado_bin = params.dorado_path ?: 'dorado'
     """
-    dorado --version 2>&1 | head -n1 > dorado.version.txt
+    command -v ${dorado_bin} >/dev/null 2>&1 || {
+        echo "ERROR: dorado is not installed (or not on PATH): '${dorado_bin}' not found. Install dorado or pass --dorado_path /path/to/dorado — see README.md 'Alternative: Conda'." >&2
+        exit 1
+    }
+    ${dorado_bin} --version 2>&1 | head -n1 > dorado.version.txt
     """
 }
 
@@ -57,6 +69,8 @@ process DORADO_VERSION {
 
 process VERKKO_VERSION {
     tag "${params.sample}"
+    label 'verkko'
+    label 'quick'
 
     output:
     path "verkko.version.txt", emit: version

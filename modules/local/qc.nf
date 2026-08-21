@@ -8,6 +8,7 @@
 
 process SEQKIT_STATS {
     tag "${params.sample}:${label}"
+    label 'qc'
     publishDir "${params.output}/qc", mode: 'copy'
 
     input:
@@ -28,6 +29,7 @@ process SEQKIT_STATS {
 
 process NANOPLOT {
     tag "${params.sample}"
+    label 'qc'
     publishDir "${params.output}/qc", mode: 'copy'
 
     input:

@@ -12,7 +12,9 @@ Two modes, selected with `--mode`:
 ## Requirements
 
 - [Nextflow](https://www.nextflow.io/) `>=23.10.0`
-- Singularity or Apptainer, with an NVIDIA driver on the host for the Dorado correct step (GPU).
+- Either Singularity/Apptainer (`-profile singularity`, default) **or** Conda/Mamba
+  (`-profile conda` — see "Alternative: Conda" below), with an NVIDIA driver on the host for
+  the Dorado correct step (GPU) either way.
 
 ## 1. Build the container images
 
@@ -38,6 +40,47 @@ Verify GPU access for Dorado:
 ```bash
 singularity exec --nv images/dorado.sif dorado --version
 ```
+
+### Alternative: Conda instead of Singularity
+
+`-profile conda` uses Conda/Mamba environments instead of Singularity images — no image builds,
+no root/`--fakeroot`. Requires `conda` or `mamba` on `PATH`; Nextflow reads
+`NXF_CONDA_ENABLED`/uses whichever it finds and picks Mamba automatically if available (faster
+solves).
+
+Environment YAMLs live under `conda/` (`samtools.yml`, `qc.yml`, `verkko.yml`) — one per tool,
+mirroring the `singularity/` `.def` layout. **You don't need to create these envs yourself**:
+Nextflow creates and caches one per YAML automatically the first time you run with
+`-profile conda` (slow on first run, cached — by content hash — after that; set
+`NXF_CONDA_CACHEDIR` to control where).
+
+**Dorado is the one exception** — there's no bioconda/conda-forge package for it, so
+`DORADO_CORRECT` has no `conda` directive and just runs against whatever `dorado` binary is
+already on `PATH`. Install ONT's binary manually (same version/URL as
+`singularity/dorado/dorado.def`):
+
+```bash
+DORADO_VERSION=2.1.1
+wget -q "https://cdn.oxfordnanoportal.com/software/analysis/dorado-${DORADO_VERSION}-linux-x64.tar.gz"
+tar -xzf "dorado-${DORADO_VERSION}-linux-x64.tar.gz" -C ~/opt
+rm "dorado-${DORADO_VERSION}-linux-x64.tar.gz"
+export PATH="$HOME/opt/dorado-${DORADO_VERSION}-linux-x64/bin:$PATH"   # add to your shell rc to persist
+dorado --version
+```
+
+Don't want to touch `PATH`? Point the pipeline at the binary directly instead:
+
+```bash
+--dorado_path "$HOME/opt/dorado-${DORADO_VERSION}-linux-x64/bin/dorado"
+```
+
+`--dorado_path` overrides `dorado` wherever it's invoked (`DORADO_CORRECT` and `DORADO_VERSION`,
+under any profile). If it's not found — a bad `--dorado_path`, or the default `dorado` missing
+from `PATH` — the pipeline fails fast with a clear "dorado is not installed" error instead of a
+raw shell "command not found".
+
+Then run with `-profile conda` in place of `-profile singularity` in any command below —
+`images/` and the `singularity/*.def` builds aren't needed for this path.
 
 ## 2. Run the pipeline
 

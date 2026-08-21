@@ -1,0 +1,9 @@
+name: ont-t2t-verkko
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  # verkko 2.3.2 needs pulp <=2.7.0, and no pulp build supports Python 3.13 — pin Python to
+  # 3.12 so the solve (and the pulp downgrade) succeeds. Same constraint as singularity/verkko/verkko.def.
+  - python=3.12
+  - verkko=2.3.2

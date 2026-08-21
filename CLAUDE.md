@@ -23,9 +23,12 @@ The pipeline is **modular by mode**, selected with `--mode`:
   The user has explicitly asked to build without testing. GPU (Dorado) and multi-hundred-GB
   RAM (Verkko) steps cannot be run in a normal dev box anyway.
 - Do not run the pipeline. Just produce correct, readable code.
-- Singularity/Apptainer is the only container engine (Docker support was removed — see
-  `sessions/session.md`). `.sif` images are built from `singularity/*/*.def` into `images/`
-  (gitignored local build artifacts).
+- Two engines are supported: Singularity/Apptainer (`-profile singularity`, default; Docker
+  support was removed — see `sessions/session.md`) and Conda/Mamba (`-profile conda`). `.sif`
+  images are built from `singularity/*/*.def` into `images/` (gitignored local build
+  artifacts); conda envs are built from `conda/*.yml` and cached by Nextflow automatically, no
+  manual build step. Dorado has no conda package — under `-profile conda` it must already be on
+  `PATH` (see README.md "Alternative: Conda").
 - Keep it single-machine / local executor. No Slurm/SGE/LSF config (Verkko has its own grid
   support that is out of scope here).
 
@@ -93,6 +96,7 @@ reads go to `--hifi`, and `--no-correction` tells Verkko not to re-correct them.
 | `--max_memory_gb` | `null` | Integer GB passed to Verkko `--local-memory`. Required in expert mode. |
 | `--threads` | `8` | Default CPUs per process (maps to `task.cpus`). |
 | `--dorado_device` | `cuda:0` | Device string for `dorado correct -x`. |
+| `--dorado_path` | `null` | Override path to the `dorado` binary; defaults to `dorado` on `PATH`. Mainly for `-profile conda` (no dorado conda package). |
 | `--min_qs` | `10` | Filter threshold, mean read qscore. Shared by ULK and Pore-C. |
 | `--min_len_ulk` | `10000` | Filter threshold, ULK read length (bp). |
 | `--min_len_porec` | `1000` | Filter threshold, Pore-C read length (bp). |
@@ -151,6 +155,10 @@ ont-t2t-assembly/
 │   ├── verkko/verkko.def
 │   ├── hifiasm/hifiasm.def       # not used by expert mode; built ahead for scalable mode
 │   └── qc/qc.def                 # seqkit + NanoPlot for the summary step
+├── conda/                        # env YAMLs for -profile conda (no Dorado — no conda package)
+│   ├── samtools.yml
+│   ├── qc.yml
+│   └── verkko.yml
 └── images/                       # built .sif files (gitignored — not checked in)
 ```
 
@@ -161,11 +169,17 @@ just implement the `.nf` files against them.
 
 ## 5. Module specs (reference implementations)
 
-Use DSL2, `tag "${params.sample}"`, and `publishDir` into `params.output`. Containers are
-assigned in `nextflow.config` via `withName:` selectors — do not hard-code `container` in the
-modules unless a selector is missing. Related processes that share a container are grouped into
-one file (`common.nf`, `qc.nf`, `tool_versions.nf`) rather than one-process-per-file — `withName:`
-selectors key off the **process name**, not the filename, so this doesn't affect config wiring.
+Use DSL2, `tag "${params.sample}"`, and a `label` (see below), and `publishDir` into
+`params.output`. Containers/conda envs are assigned in `nextflow.config` via `withLabel:`
+selectors, keyed off each process's `label` directive — do not hard-code `container`/`conda` in
+the modules unless a selector is missing. Using labels rather than `withName:` means the config
+doesn't need updating when a process gets a new `include { X as Y }` alias in a workflow (see
+`BAM_TO_FASTQ_ULK`/`_POREC` etc. in §3's multi-flowcell note) — the label travels with the
+process definition regardless of what it's invoked as. Labels in use: `samtools`, `qc`,
+`dorado`, `verkko` (one per container/conda env — see §7), plus `gpu` (adds `--nv`; only
+`DORADO_CORRECT`) and `quick` (cuts cpus/memory for the five tiny version-capture processes).
+Related processes that share a label are grouped into one file (`common.nf`, `qc.nf`,
+`tool_versions.nf`) rather than one-process-per-file.
 
 ### `common.nf` — samtools-based read processing
 
@@ -175,6 +189,7 @@ Only invoked when there's more than one file for a given `--*_reads` param (see 
 ```groovy
 process MERGE_READS {
     tag "${params.sample}:${label}"
+    label 'samtools'
     publishDir "${params.output}/merged", mode: 'copy'
 
     input:
@@ -206,6 +221,7 @@ qscore threshold (`--min_qs`) is shared.
 ```groovy
 process BAM_TO_FASTQ {
     tag "${params.sample}:${label}"
+    label 'samtools'
     publishDir "${params.output}/fastq", mode: 'copy'
 
     input:
@@ -245,6 +261,7 @@ Dorado-corrected reads each get their own report rather than one combined file. 
 ```groovy
 process SEQKIT_STATS {
     tag "${params.sample}:${label}"
+    label 'qc'
     publishDir "${params.output}/qc", mode: 'copy'
     input:  tuple val(label), path(fastqs)
     output: tuple val(label), path("${params.sample}.${label}.read_stats.tsv"), emit: stats
@@ -260,6 +277,7 @@ Only invoked when `--plot` is set (opt-in; see §3) — `SEQKIT_STATS` always ru
 ```groovy
 process NANOPLOT {
     tag "${params.sample}"
+    label 'qc'
     publishDir "${params.output}/qc", mode: 'copy'
     input:  path ulk_fastq
     output: path "nanoplot_${params.sample}/**", emit: report
@@ -271,25 +289,39 @@ process NANOPLOT {
 ```groovy
 process DORADO_CORRECT {
     tag "${params.sample}"
+    label 'dorado'
+    label 'gpu'
     publishDir "${params.output}/corrected", mode: 'copy'
     input:  path ulk_fastq
     output: path "${params.sample}.doradocorrect.fasta", emit: corrected
     script:
+    def dorado_bin = params.dorado_path ?: 'dorado'
     """
-    dorado correct -x ${params.dorado_device} -t ${task.cpus} ${ulk_fastq} > ${params.sample}.doradocorrect.fasta
+    command -v ${dorado_bin} >/dev/null 2>&1 || {
+        echo "ERROR: dorado is not installed (or not on PATH): '${dorado_bin}' not found. Install dorado or pass --dorado_path /path/to/dorado — see README.md 'Alternative: Conda'." >&2
+        exit 1
+    }
+    ${dorado_bin} correct -x ${params.dorado_device} -t ${task.cpus} ${ulk_fastq} > ${params.sample}.doradocorrect.fasta
     """
 }
 ```
-- GPU is enabled by `containerOptions '--nv'` in the config (`withName: DORADO_CORRECT`).
+- GPU is enabled by `containerOptions '--nv'`, added via the `gpu` label in the config
+  (`withLabel: 'gpu'`) — `DORADO_CORRECT` is the only process with this label.
 - `dorado correct` downloads its correction model on first run (needs internet) unless it's
   pre-baked or a model cache volume is mounted. See the dorado `.def` comment. Leave a
   commented `--model-path` hook in the process for when a cached model is mounted.
+- `--dorado_path` overrides which `dorado` binary runs (default: plain `dorado`, resolved via
+  `PATH`) — mainly for `-profile conda`, which has no dorado conda package (see §7). The
+  `command -v` guard fails fast with a clear message instead of a raw shell "command not found"
+  when dorado isn't installed/isn't on `PATH`. `DORADO_VERSION` (`modules/local/tool_versions.nf`)
+  uses the same override + guard.
 
 ### `VERKKO` (modules/local/verkko.nf)
 Handle both branches with optional inputs. Pass empty file lists for the branch that isn't used.
 ```groovy
 process VERKKO {
     tag "${params.sample}"
+    label 'verkko'
     publishDir "${params.output}", mode: 'copy'
 
     input:
@@ -316,25 +348,27 @@ process VERKKO {
   `assembly.haplotype1.fasta`, `assembly.haplotype2.fasta`.
 
 ### Tool versions (modules/local/tool_versions.nf + software_versions.nf)
-One tiny version-capture process per container already used elsewhere in the pipeline (reuses
-the same image, so the reported version is guaranteed to match what actually ran), plus a
-combiner. All have no pipeline inputs — they run `<tool> --version` once per invocation:
+One tiny version-capture process per label already used elsewhere in the pipeline (so it reuses
+the matching container/conda env, and the reported version is guaranteed to match what actually
+ran), plus a combiner. Each carries its tool's label **and** `quick` (cuts cpus/memory — see
+§7/`nextflow.config`). All have no pipeline inputs — they run `<tool> --version` once per
+invocation:
 
-- `SAMTOOLS_VERSION` — `images/samtools.sif` (same container as `BAM_TO_FASTQ`/`MERGE_READS`)
-- `QC_VERSIONS` — `images/qc.sif`; captures both seqkit and NanoPlot in one process (same
-  container as `SEQKIT_STATS`/`NANOPLOT`)
-- `DORADO_VERSION` — `images/dorado.sif`, deliberately **without** `--nv`: a version
-  check doesn't need GPU hardware
-- `VERKKO_VERSION` — `images/verkko.sif`
+- `SAMTOOLS_VERSION` — `label 'samtools'; label 'quick'` (same env as `BAM_TO_FASTQ`/`MERGE_READS`)
+- `QC_VERSIONS` — `label 'qc'; label 'quick'`; captures both seqkit and NanoPlot in one process
+  (same env as `SEQKIT_STATS`/`NANOPLOT`)
+- `DORADO_VERSION` — `label 'dorado'; label 'quick'`, deliberately **without** `label 'gpu'`: a
+  version check doesn't need GPU hardware
+- `VERKKO_VERSION` — `label 'verkko'; label 'quick'`
 
 Each writes `<tool>.version.txt` containing the raw first line of `<tool> --version` output
 (formats vary by tool — not reparsed/normalized further; see the module files if a
 specific tool's format needs stripping down to a bare version number).
 
-`SOFTWARE_VERSIONS` collects all `*.version.txt` files (`workflows/expert.nf` mixes + flattens
-the four channels above) plus `workflow.nextflow.version` and `workflow.manifest.version`, and
-writes `${params.sample}.software_versions.json` to `${params.output}/`. Runs in the qc
-container (already has python3 via miniforge) — no new image.
+`SOFTWARE_VERSIONS` (`label 'qc'; label 'quick'`) collects all `*.version.txt` files
+(`workflows/expert.nf` mixes + flattens the four channels above) plus `workflow.nextflow.version`
+and `workflow.manifest.version`, and writes `${params.sample}.software_versions.json` to
+`${params.output}/`. Runs in the qc env (already has python3 via miniforge) — no new image.
 
 ---
 
@@ -354,20 +388,23 @@ wants to compare ULK vs Pore-C side by side — not needed now.
 
 ---
 
-## 7. Containers (already written under `singularity/`)
+## 7. Containers and Conda envs (already written under `singularity/` and `conda/`)
 
-One image per tool, built into `images/` (gitignored) and referenced there by exact path
-(set in `nextflow.config`):
+Two mutually-exclusive engines, selected with `-profile singularity` (default) or `-profile
+conda`. `nextflow.config` assigns these by `withLabel:` (see §5) rather than `withName:`, so it
+doesn't matter that `BAM_TO_FASTQ`, `MERGE_READS`, and `SEQKIT_STATS` are each imported under
+several aliases in `workflows/expert.nf` (§3's multi-flowcell note) — the label lives on the
+process definition, not the alias.
 
-| Process | Image | Base / install |
-|---|---|---|
-| `BAM_TO_FASTQ`, `MERGE_READS`, `SAMTOOLS_VERSION` | `images/samtools.sif` | ubuntu, samtools built from source |
-| `SEQKIT_STATS`, `NANOPLOT`, `QC_VERSIONS`, `SOFTWARE_VERSIONS` | `images/qc.sif` | miniforge, `seqkit` + `nanoplot` |
-| `DORADO_CORRECT`, `DORADO_VERSION` | `images/dorado.sif` | `nvidia/cuda` runtime + Dorado CDN binary |
-| `VERKKO`, `VERKKO_VERSION` | `images/verkko.sif` | miniforge, `verkko` from bioconda |
-| (scalable, later) | `images/hifiasm.sif` | ubuntu, hifiasm built from source |
+| Process | Singularity image | Conda env | Base / install |
+|---|---|---|---|
+| `BAM_TO_FASTQ`, `MERGE_READS`, `SAMTOOLS_VERSION` | `images/samtools.sif` | `conda/samtools.yml` | ubuntu, samtools built from source / bioconda |
+| `SEQKIT_STATS`, `NANOPLOT`, `QC_VERSIONS`, `SOFTWARE_VERSIONS` | `images/qc.sif` | `conda/qc.yml` | miniforge, `seqkit` + `nanoplot`, both bioconda |
+| `DORADO_CORRECT`, `DORADO_VERSION` | `images/dorado.sif` | *(none — see below)* | `nvidia/cuda` runtime + Dorado CDN binary |
+| `VERKKO`, `VERKKO_VERSION` | `images/verkko.sif` | `conda/verkko.yml` | miniforge, `verkko` from bioconda |
+| (scalable, later) | `images/hifiasm.sif` | *(none yet)* | ubuntu, hifiasm built from source |
 
-Build all:
+Build all Singularity images:
 ```bash
 singularity build images/samtools.sif singularity/samtools/samtools.def
 singularity build images/dorado.sif   singularity/dorado/dorado.def
@@ -377,6 +414,13 @@ singularity build images/qc.sif       singularity/qc/qc.def
 ```
 GPU note: the host needs the NVIDIA driver; the Dorado process requests the GPU via `--nv`
 (set in config). Verify with `singularity exec --nv images/dorado.sif dorado --version`.
+
+**Conda**: no build step — Nextflow creates and caches each `conda/*.yml` env automatically on
+first run under `-profile conda`. **Dorado has no conda/bioconda package**: `DORADO_CORRECT`
+and `DORADO_VERSION` get no `conda` directive in `nextflow.config` and just run against
+whatever `dorado` binary is already on `PATH` under this profile — install ONT's binary
+manually (same version/URL as `singularity/dorado/dorado.def`); see README.md "Alternative:
+Conda" for the exact commands.
 
 ---
 
@@ -401,10 +445,14 @@ nextflow run main.nf -profile singularity \
 ## 9. Conventions
 
 - Nextflow DSL2, `nextflow.enable.dsl=2`.
-- UPPER_SNAKE_CASE process names. Group related processes that share a container into one
-  module file (e.g. `common.nf`, `qc.nf`, `tool_versions.nf`) rather than one-process-per-file —
-  `withName:` selectors in `nextflow.config` key off the process name, not the filename.
-- No hard-coded resources in modules — resources and `container` come from `nextflow.config`.
+- UPPER_SNAKE_CASE process names. Every process carries a `label` (see §5) — `nextflow.config`
+  assigns containers/conda envs/resources by `withLabel:`, not `withName:`, so config wiring
+  survives a process being aliased (`include { X as Y }`) at however many call sites a workflow
+  needs. Group related processes that share a label into one module file (e.g. `common.nf`,
+  `qc.nf`, `tool_versions.nf`) rather than one-process-per-file — the filename is irrelevant to
+  config wiring either way.
+- No hard-coded resources in modules — resources and `container`/`conda` come from
+  `nextflow.config`.
 - `publishDir mode: 'copy'`.
 - Prefix every output file with `${params.sample}`.
 - Keep the Verkko quirk comment (nano=uncorrected, hifi=corrected) in `verkko.nf`.
