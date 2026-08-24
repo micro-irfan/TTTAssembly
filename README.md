@@ -27,7 +27,8 @@ these are large local build artifacts, not checked in):
 singularity build images/samtools.sif singularity/samtools/samtools.def
 singularity build images/dorado.sif   singularity/dorado/dorado.def
 singularity build images/verkko.sif   singularity/verkko/verkko.def
-singularity build images/hifiasm.sif  singularity/hifiasm/hifiasm.def   # not used by expert mode; for scalable mode
+singularity build images/hifiasm.sif  singularity/hifiasm/hifiasm.def   # scalable mode
+singularity build images/yak.sif      singularity/yak/yak.def           # scalable mode, trio phasing only
 singularity build images/qc.sif       singularity/qc/qc.def
 ```
 
@@ -47,8 +48,9 @@ no root/`--fakeroot`. Requires `conda` or `mamba` on `PATH`; Nextflow reads
 `NXF_CONDA_ENABLED`/uses whichever it finds and picks Mamba automatically if available (faster
 solves).
 
-Environment YAMLs live under `conda/` (`samtools.yml`, `qc.yml`, `verkko.yml`) — one per tool,
-mirroring the `singularity/` `.def` layout. **You don't need to create these envs yourself**:
+Environment YAMLs live under `conda/` (`samtools.yml`, `qc.yml`, `verkko.yml`, and — for
+scalable mode — `hifiasm.yml`, `yak.yml`) — one per tool, mirroring the `singularity/` `.def`
+layout. **You don't need to create these envs yourself**:
 Nextflow creates and caches one per YAML automatically the first time you run with
 `-profile conda` (slow on first run, cached — by content hash — after that; set
 `NXF_CONDA_CACHEDIR` to control where).
@@ -91,6 +93,15 @@ nextflow run main.nf -profile singularity \
   --mode expert --sample HG002 --filtering false \
   --ulk_reads ulk.bam --hic_reads_1 hic_R1.fastq --hic_reads_2 hic_R2.fastq \
   --max_memory_gb 480 --output results
+
+# Scalable mode, default (dual) sub-mode
+nextflow run main.nf -profile singularity \
+  --mode scalable --sample HG002 --long_reads long.bam --output results
+
+# Scalable mode, trio phasing
+nextflow run main.nf -profile singularity \
+  --mode scalable --sample HG002 --long_reads long.bam \
+  --pat_reads father.fastq --mat_reads mother.fastq --output results
 ```
 
 See all options:
@@ -99,7 +110,7 @@ See all options:
 nextflow run main.nf --help
 ```
 
-### Key parameters
+### Key parameters — expert mode
 
 | Param | Default | Meaning |
 |---|---|---|
@@ -107,10 +118,10 @@ nextflow run main.nf --help
 | `--sample` | `sample` | Sample name; prefixes all output filenames. |
 | `--ulk_reads` | `null` | Path to the ULK BAM (required, expert mode). Comma-separate multiple flowcells to merge them. |
 | `--porec_reads` | `null` | Path to the Pore-C BAM. Mutually exclusive with the Hi-C pair. Comma-separated list supported. |
-| `--hic_reads_1/2` | `null` | Paths to the Hi-C R1/R2 FASTQs. Comma-separated lists supported (same count on both). |
+| `--hic_reads_1/2` | `null` | Paths to the Hi-C R1/R2 FASTQs. Comma-separated lists supported (same count on both). Shared with scalable mode's Hi-C sub-mode. |
 | `--max_memory_gb` | `null` | Integer GB passed to Verkko `--local-memory` (required, expert mode). |
 | `--filtering` | `true` | `true` → apply qs/length filter; `false` → plain BAM→FASTQ. |
-| `--plot` | `false` | Also run NanoPlot in the QC step (seqkit stats always runs). |
+| `--plot` | `false` | Also run NanoPlot in the QC step (seqkit stats always runs). Shared with scalable mode. |
 | `--output` | `results` | Output directory. |
 
 Full table in [CLAUDE.md §3](CLAUDE.md#3-parameters-define-in-nextflowconfig-document-in-a---help).
@@ -133,10 +144,42 @@ If the qs/length filter (or the merge itself) leaves zero reads for a source, th
 fails immediately with a clear error rather than continuing on to Dorado/Verkko with an empty
 FASTQ.
 
+### Scalable mode (hifiasm)
+
+`--mode scalable` shares `main.nf`'s dispatch/params/validation with expert mode (same entry
+point, same `-profile singularity`/`-profile conda`), but assembles with **hifiasm `--ont`**
+instead of Verkko — no Dorado correction step. Full spec:
+[CLAUDE.md §11](CLAUDE.md#11-scalable-mode-hifiasm).
+
+Sub-mode is auto-selected from which inputs you give it — no separate flag:
+
+| Sub-mode | Trigger | Output |
+|---|---|---|
+| **default (dual)** | `--long_reads` only | collapsed + 2 partially-phased haplotypes |
+| **Hi-C** | + `--hic_reads_1`/`--hic_reads_2` | collapsed + 2 Hi-C-phased haplotypes |
+| **trio** | + `--pat_reads`/`--mat_reads` | collapsed + 2 trio-phased haplotypes (via yak) |
+
+Hi-C and trio inputs are mutually exclusive (pick one phasing method); each pair (`hic_reads_1`/
+`hic_reads_2`, `pat_reads`/`mat_reads`) must be given both-or-neither. Validation for all of
+this happens before any process launches.
+
+#### Key parameters — scalable mode
+
+| Param | Default | Meaning |
+|---|---|---|
+| `--long_reads` | `null` | **Required.** ONT long reads: `.bam`, `.fastq`, or `.fastq.gz`. Comma-separate multiple flowcells to merge them (same mechanism as `--ulk_reads`). |
+| `--mat_reads` / `--pat_reads` | `null` | Maternal/paternal reads for trio phasing (via yak). Single file only — no comma-separated merge. Both required together, or neither. |
+| `--telo_motif` | `CCCTAA` | Telomere motif for `hifiasm --telo-m` (human/vertebrate default; change per species). |
+
+`--max_memory_gb` and `--filtering` (expert-only) are ignored in scalable mode.
+
+`run_scalable_wf.sh` has a ready-to-edit background-launch example (default sub-mode).
+
 ## 3. Outputs
 
-Published under `--output` (default `results/`):
+Published under `--output` (default `results/`).
 
+**Expert mode**:
 ```
 results/
 ├── fastq/          # ${sample}.ultralong.fastq, ${sample}.porec.fastq, ${sample}.hic_r1/r2.fastq — merge
@@ -147,6 +190,16 @@ results/
 ├── verkko_output/     # assembly.fasta, assembly.haplotype1.fasta, assembly.haplotype2.fasta, ...
 ├── ${sample}.software_versions.json  # samtools/seqkit/NanoPlot/dorado/verkko/nextflow/pipeline versions
 └── pipeline_info/     # timeline/report/trace/dag
+```
+
+**Scalable mode** (long-reads normalization is an internal intermediate, not published):
+```
+results/
+├── qc/                        # ${sample}.longreads.read_stats.tsv, nanoplot_${sample}/ (with --plot)
+└── ${sample}/                 # hifiasmONT_asm* (full hifiasm output) + one .fasta per p_ctg GFA:
+                                # hifiasmONT_asm.<bp|hic|dip>.p_ctg.{gfa,fasta},
+                                # .hap1.p_ctg.{gfa,fasta}, .hap2.p_ctg.{gfa,fasta}
+                                # (infix is bp/hic/dip depending on which sub-mode ran)
 ```
 
 ## Testing
