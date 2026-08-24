@@ -1,0 +1,45 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+# yak — k-mer indexing for hifiasm trio (parental) phasing.
+# Only needed for scalable-mode trio assembly (--mat_reads / --pat_reads).
+#
+# Build (any ONE of):
+#   sudo singularity build images/yak.sif singularity/yak.def
+#   singularity build --fakeroot images/yak.sif singularity/yak.def
+#   apptainer  build --fakeroot images/yak.sif singularity/yak.def
+#
+# No-build alternative (recommended if you hit build/permission issues): point the
+# YAK_COUNT container directive straight at a prebuilt biocontainer image, e.g.
+#   container = 'https://depot.galaxyproject.org/singularity/yak:0.1--he4a0461_5'
+# Nextflow downloads the .sif for you — resolve the exact tag from
+# https://depot.galaxyproject.org/singularity/  (search "yak").
+
+%labels
+    Tool    yak
+    Version 0.1
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends git gcc make zlib1g-dev ca-certificates
+    rm -rf /var/lib/apt/lists/*
+
+    YAK_VERSION=0.1
+    git clone https://github.com/lh3/yak /opt/yak
+    cd /opt/yak
+    git checkout "${YAK_VERSION}" || echo "tag ${YAK_VERSION} not found, building default branch"
+    make
+
+%environment
+    export PATH="/opt/yak:${PATH}"
+
+%runscript
+    exec yak "$@"
+
+%test
+    yak version
+
+%help
+    yak k-mer indexing, used by hifiasm for trio phasing in scalable-mode assembly.
+    Run:  singularity exec images/yak.sif yak count -b37 -t 32 -o pat.yak paternal.fastq

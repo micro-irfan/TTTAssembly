@@ -354,10 +354,11 @@ process VERKKO {
     path "verkko_output/**", emit: assembly
 
     script:
-    def reads_arg = porec_fastq ? "--porec ${porec_fastq}" : "--hic1 ${hic1} --hic2 ${hic2}"
+    def reads_arg  = porec_fastq ? "--porec ${porec_fastq}" : "--hic1 ${hic1} --hic2 ${hic2}"
+    def local_cpus = (params.threads as int) * 2
     """
     verkko --nano ${nano_fastq} --hifi ${hifi_fasta} ${reads_arg} \
-        --no-correction --local-memory ${params.max_memory_gb} --local-cpus ${task.cpus} \
+        --no-correction --local-memory ${params.max_memory_gb} --local-cpus ${local_cpus} \
         -d verkko_output
     """
 }
@@ -366,6 +367,12 @@ process VERKKO {
   branching inside one process if the optional-path handling gets awkward — either is fine,
   pick the cleaner one. The key outputs to expose are `assembly.fasta`,
   `assembly.haplotype1.fasta`, `assembly.haplotype2.fasta`.
+- `--local-cpus` is `params.threads * 2` computed directly in the script, **not** `task.cpus`:
+  the `cpus` directive (`withLabel: 'verkko'` in `nextflow.config`) is `params.threads` — the
+  local executor caps a task's `cpus` to the host's actual available processors, so a doubled
+  `cpus` directive would just get silently capped back down (e.g. 48*2=96 on a 48-core host
+  never actually reaches `task.cpus`). Computing `local_cpus` straight from `params.threads`
+  decouples Verkko's internal thread-pool size from Nextflow's own scheduling/cpu accounting.
 
 ### Tool versions (modules/local/tool_versions.nf + software_versions.nf)
 One tiny version-capture process per label already used elsewhere in the pipeline (so it reuses
