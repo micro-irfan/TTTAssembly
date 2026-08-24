@@ -1,0 +1,6 @@
+name: ont-t2t-yak
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - yak

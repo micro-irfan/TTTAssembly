@@ -72,3 +72,52 @@ process BAM_TO_FASTQ {
     }
     """
 }
+
+// PREPARE_LONGREADS (scalable mode — see CLAUDE.md §11)
+// Merge+normalize any read source to plain FASTQ, no filtering (scalable mode doesn't
+// pre-filter; hifiasm handles uncorrected ONT reads directly). Reused for --long_reads
+// (always) and --pat_reads/--mat_reads (trio mode) — imported under a distinct alias per
+// source in workflows/scalable.nf (same DSL2 multi-invocation reason as BAM_TO_FASTQ above).
+// No publishDir: this is an intermediate the doc doesn't want published.
+
+process PREPARE_LONGREADS {
+    tag "${params.sample}:${label}"
+    label 'samtools'
+
+    input:
+    tuple val(label), path(reads), val(ext)
+
+    output:
+    tuple val(label), path("${params.sample}.${label}.fastq"), emit: fastq
+
+    script:
+    def out    = "${params.sample}.${label}.fastq"
+    def is_bam = (ext == 'bam')
+    def multi  = (reads instanceof List) && reads.size() > 1
+    // Only ever a 2-stage pipe (merge | fastq) at most — no filter stage in scalable mode.
+    def n_stages = (is_bam && multi) ? 2 : 1
+    def cpus     = Math.max(task.cpus.intdiv(n_stages) as int, 1)
+
+    // TODO(user): hifiasm accepts gzipped FASTQ directly — for a single-file .fastq.gz input
+    // (no merge needed), this normalization step could be skipped and the .gz fed straight to
+    // hifiasm instead, saving I/O. See CLAUDE.md §11 open questions.
+    def cmd
+    if (is_bam && multi)
+        cmd = "samtools merge -u -@ ${cpus} -o - ${reads} | samtools fastq -@ ${cpus} - > ${out}"
+    else if (is_bam)
+        cmd = "samtools fastq -@ ${cpus} ${reads} > ${out}"
+    else if (ext == 'fastq.gz')
+        // zcat accepts multiple files, decompressing+concatenating in one pass.
+        cmd = "zcat ${reads} > ${out}"
+    else
+        cmd = "cat ${reads} > ${out}"
+
+    """
+    ${cmd}
+
+    [ -s ${out} ] || {
+        echo "ERROR: ${out} is empty (label=${label}) — the input has no reads, or is corrupt." >&2
+        exit 1
+    }
+    """
+}

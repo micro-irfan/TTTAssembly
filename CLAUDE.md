@@ -11,12 +11,11 @@ A Nextflow (DSL2) pipeline that reproduces the Oxford Nanopore "expert telomere-
 (T2T)" downstream analysis workflow for `SQK-ULK114` ultra-long reads combined with Pore-C
 or Hi-C data. Assembly is done with **Verkko**.
 
-The pipeline is **modular by mode**, selected with `--mode`:
+The pipeline is **modular by mode**, selected with `--mode`, sharing `main.nf`'s dispatch and
+param validation:
 
-- `expert`  → implemented now (this document).
-- `scalable` → **stub only** for now. The user will supply the steps later. Create the
-  file and the `--mode scalable` dispatch, but leave the body as a clearly-marked TODO that
-  fails fast with an informative message. Do **not** invent scalable-mode steps.
+- `expert`  → Verkko-based assembly (this document, §2–§9).
+- `scalable` → hifiasm-based assembly — see §11.
 
 ### Scope / non-goals (read carefully)
 - **No testing.** Do not add `nf-test`, a `test` profile, CI, stub-run data, or assertions.
@@ -144,26 +143,31 @@ ont-t2t-assembly/
 ├── nextflow.config               # params, singularity profile, per-process resources (ALREADY WRITTEN)
 ├── modules/
 │   └── local/
-│       ├── common.nf             # BAM_TO_FASTQ (samtools-based read merge + filter/convert)
+│       ├── common.nf             # BAM_TO_FASTQ + PREPARE_LONGREADS (samtools-based read merge/convert)
 │       ├── raw_qc.nf             # SEQKIT_STATS + NANOPLOT (NANOPLOT gated by --plot) — raw-reads QC,
-│       │                         # distinct from assembly QC (planned, see session_assembly_qc.md)
-│       ├── dorado_correct.nf     # DORADO_CORRECT (GPU)
-│       ├── verkko.nf             # VERKKO (porec + hic handled with optional inputs)
+│       │                         # distinct from assembly QC (see §10); reused by scalable mode too
+│       ├── dorado_correct.nf     # DORADO_CORRECT (GPU, expert mode only)
+│       ├── verkko.nf             # VERKKO (porec + hic handled with optional inputs, expert mode)
+│       ├── yak_count.nf          # YAK_COUNT (scalable mode, trio phasing only) — see §11
+│       ├── hifiasm.nf            # HIFIASM + GFA_TO_FASTA (scalable mode) — see §11
 │       ├── tool_versions.nf      # SAMTOOLS_VERSION + QC_VERSIONS + DORADO_VERSION + VERKKO_VERSION
 │       └── software_versions.nf  # SOFTWARE_VERSIONS — combines the above into one JSON
 ├── workflows/
-│   ├── expert.nf                 # the implemented workflow
-│   └── scalable.nf               # STUB — fail-fast TODO, user fills later
+│   ├── expert.nf                 # expert mode (Verkko)
+│   └── scalable.nf               # scalable mode (hifiasm) — see §11
 ├── singularity/                  # .def recipes (ALREADY WRITTEN — one per tool)
 │   ├── samtools/samtools.def
 │   ├── dorado/dorado.def
 │   ├── verkko/verkko.def
-│   ├── hifiasm/hifiasm.def       # not used by expert mode; built ahead for scalable mode
+│   ├── hifiasm/hifiasm.def       # scalable mode
+│   ├── yak/yak.def               # scalable mode, trio phasing only
 │   └── qc/qc.def                 # seqkit + NanoPlot for the summary step
 ├── conda/                        # env YAMLs for -profile conda (no Dorado — no conda package)
 │   ├── samtools.yml
 │   ├── qc.yml
-│   └── verkko.yml
+│   ├── verkko.yml
+│   ├── hifiasm.yml               # scalable mode
+│   └── yak.yml                   # scalable mode, trio phasing only
 └── images/                       # built .sif files (gitignored — not checked in)
 ```
 
@@ -354,11 +358,10 @@ process VERKKO {
     path "verkko_output/**", emit: assembly
 
     script:
-    def reads_arg  = porec_fastq ? "--porec ${porec_fastq}" : "--hic1 ${hic1} --hic2 ${hic2}"
-    def local_cpus = (params.threads as int) * 2
+    def reads_arg = porec_fastq ? "--porec ${porec_fastq}" : "--hic1 ${hic1} --hic2 ${hic2}"
     """
     verkko --nano ${nano_fastq} --hifi ${hifi_fasta} ${reads_arg} \
-        --no-correction --local-memory ${params.max_memory_gb} --local-cpus ${local_cpus} \
+        --no-correction --local-memory ${params.max_memory_gb} --local-cpus ${task.cpus} \
         -d verkko_output
     """
 }
@@ -367,12 +370,14 @@ process VERKKO {
   branching inside one process if the optional-path handling gets awkward — either is fine,
   pick the cleaner one. The key outputs to expose are `assembly.fasta`,
   `assembly.haplotype1.fasta`, `assembly.haplotype2.fasta`.
-- `--local-cpus` is `params.threads * 2` computed directly in the script, **not** `task.cpus`:
-  the `cpus` directive (`withLabel: 'verkko'` in `nextflow.config`) is `params.threads` — the
-  local executor caps a task's `cpus` to the host's actual available processors, so a doubled
-  `cpus` directive would just get silently capped back down (e.g. 48*2=96 on a 48-core host
-  never actually reaches `task.cpus`). Computing `local_cpus` straight from `params.threads`
-  decouples Verkko's internal thread-pool size from Nextflow's own scheduling/cpu accounting.
+- `--local-cpus` uses `task.cpus` directly. `withLabel: 'verkko'` sets `cpus = { params.threads
+  * 2 }` (Verkko's internal thread pool benefits from 2x oversubscription) — this alone would
+  normally get silently capped back down to the host's real core count by the local executor's
+  auto-detected ceiling, so `nextflow.config` also raises that ceiling explicitly
+  (`executor { $local { cpus = params.threads * 2 } }`), which both removes the cap **and**
+  keeps Nextflow's own scheduling honest about Verkko's real cpu usage (previously this was
+  worked around by computing a `local_cpus` value in the script, decoupled from `task.cpus` —
+  simplified once the executor ceiling was raised instead; see `sessions/session.md`).
 
 ### Tool versions (modules/local/tool_versions.nf + software_versions.nf)
 One tiny version-capture process per label already used elsewhere in the pipeline (so it reuses
@@ -425,11 +430,12 @@ process definition, not the alias.
 
 | Process | Singularity image | Conda env | Base / install |
 |---|---|---|---|
-| `BAM_TO_FASTQ`, `SAMTOOLS_VERSION` | `images/samtools.sif` | `conda/samtools.yml` | ubuntu, samtools built from source / bioconda |
+| `BAM_TO_FASTQ`, `PREPARE_LONGREADS`, `GFA_TO_FASTA`, `SAMTOOLS_VERSION` | `images/samtools.sif` | `conda/samtools.yml` | ubuntu, samtools built from source / bioconda |
 | `SEQKIT_STATS`, `NANOPLOT`, `QC_VERSIONS`, `SOFTWARE_VERSIONS` | `images/qc.sif` | `conda/qc.yml` | miniforge, `seqkit` + `nanoplot`, both bioconda |
 | `DORADO_CORRECT`, `DORADO_VERSION` | `images/dorado.sif` | *(none — see below)* | `nvidia/cuda` runtime + Dorado CDN binary |
 | `VERKKO`, `VERKKO_VERSION` | `images/verkko.sif` | `conda/verkko.yml` | miniforge, `verkko` from bioconda |
-| (scalable, later) | `images/hifiasm.sif` | *(none yet)* | ubuntu, hifiasm built from source |
+| `HIFIASM` (scalable mode) | `images/hifiasm.sif` | `conda/hifiasm.yml` | ubuntu, hifiasm built from source / bioconda |
+| `YAK_COUNT` (scalable mode, trio only) | `images/yak.sif` | `conda/yak.yml` | ubuntu, yak built from source / bioconda |
 
 Build all Singularity images:
 ```bash
@@ -437,6 +443,7 @@ singularity build images/samtools.sif singularity/samtools/samtools.def
 singularity build images/dorado.sif   singularity/dorado/dorado.def
 singularity build images/verkko.sif   singularity/verkko/verkko.def
 singularity build images/hifiasm.sif  singularity/hifiasm/hifiasm.def
+singularity build images/yak.sif      singularity/yak/yak.def
 singularity build images/qc.sif       singularity/qc/qc.def
 ```
 GPU note: the host needs the NVIDIA driver; the Dorado process requests the GPU via `--nv`
@@ -483,7 +490,8 @@ nextflow run main.nf -profile singularity \
 - `publishDir mode: 'copy'`.
 - Prefix every output file with `${params.sample}`.
 - Keep the Verkko quirk comment (nano=uncorrected, hifi=corrected) in `verkko.nf`.
-- `scalable.nf` must exist and fail cleanly: `error "scalable mode not yet implemented"`.
+- `scalable.nf` is the hifiasm-based workflow (§11), not a stub — `main.nf` dispatches to it the
+  same way it dispatches to `expert.nf`'s `EXPERT()`.
 - Don't touch `nextflow.config` or the `singularity/*/*.def` files unless a bug blocks the
   build; if you do, note it in `session.md`.
 
@@ -624,3 +632,116 @@ default is the main pipeline's singularity-based `test` profile):
 ```bash
 nf-test test --profile conda tests/modules/local/{gfastats,compleasm,seqtk_telo}.nf.test
 ```
+
+---
+
+## 11. Scalable mode (hifiasm)
+
+`--mode scalable` (dispatched from the same `main.nf` as `--mode expert`, §1) assembles ONT
+long reads with **hifiasm `--ont`** instead of Verkko/Dorado — ONT's "scalable (near) T2T"
+method (`SQK-LSK114`). No Dorado correction step: hifiasm reads uncorrected ONT reads directly.
+Full history/decisions/open questions: `sessions/session_scalable.md`.
+
+### Sub-modes (auto-selected from which inputs are given)
+- **default (dual)** — long reads only → collapsed + two dual (partially-phased) haplotypes.
+- **Hi-C** — long reads + `--hic_reads_1`/`--hic_reads_2` → collapsed + two Hi-C-phased
+  haplotypes. Shares the Hi-C params with expert mode.
+- **trio** — long reads + `--pat_reads`/`--mat_reads` (via yak) → collapsed + two trio-phased
+  haplotypes.
+
+Selection priority (in `workflows/scalable.nf`): trio > Hi-C > default. `main.nf` validates
+before any process launches: `--long_reads` required; `--mat_reads`/`--pat_reads` both-or-neither;
+`--hic_reads_1`/`--hic_reads_2` both-or-neither; trio and Hi-C inputs can't both be set.
+
+### Data requirements (from ONT)
+- Long reads ~40–45x, N50 ~30 kb (works down to ~30x / N50 10 kb with reduced contiguity).
+- Hi-C 20–30x, OR parental (long/short read) 20–30x **per parent**.
+- Compute: ≥300 GB RAM; ~1,000–3,000 CPU-hours (+500–1,000 with Hi-C).
+- Tools: Samtools, Hifiasm ≥ v0.25.0, Awk, Yak ≥ v0.1 (trio only).
+
+### Provisioning — both engines, singularity default
+Same as expert mode: `-profile singularity` (default) or `-profile conda`. `HIFIASM`
+(`label 'hifiasm'`) and `YAK_COUNT` (`label 'yak'`, trio only) each get a container mapping
+(`images/hifiasm.sif`, `images/yak.sif`) and a conda env (`conda/hifiasm.yml`, `conda/yak.yml`).
+`PREPARE_LONGREADS` and `GFA_TO_FASTA` (`label 'samtools'`) reuse the existing samtools
+image/env — no new container needed for either.
+
+### Parameters
+`--mode`, `--sample`, `--output`, `--threads`, `--hic_reads_1`, `--hic_reads_2` are shared with
+expert mode (§3). `--max_memory_gb` and `--filtering` (expert-only) are ignored in scalable
+mode. New:
+
+| Param | Default | Meaning |
+|---|---|---|
+| `--long_reads` | `null` | **Required.** ONT long reads: `.bam`, `.fastq`, or `.fastq.gz`. Comma-separated list merges multiple flowcells (same mechanism as `--ulk_reads`, §3). |
+| `--mat_reads` | `null` | Maternal reads for trio phasing (via yak). Single file only (no comma-separated merge). |
+| `--pat_reads` | `null` | Paternal reads for trio phasing (via yak). Single file only. |
+| `--telo_motif` | `CCCTAA` | Telomere motif for `hifiasm --telo-m` (human/vertebrate default; change per species). |
+
+### `workflows/scalable.nf` steps
+1. Sub-mode selection (trio > Hi-C > default).
+2. `PREPARE_LONGREADS` normalizes `--long_reads` to plain FASTQ (merge multi-flowcell +
+   BAM→FASTQ, no filtering — hifiasm handles uncorrected reads directly). In trio mode,
+   `--pat_reads`/`--mat_reads` are **also** routed through `PREPARE_LONGREADS` uniformly
+   (handles BAM or FASTQ/FASTQ.GZ either way), not just when they happen to be BAM.
+3. **Pre-assembly QC — reused from expert mode, not a new module**: `SEQKIT_STATS` on the
+   normalized long reads (always), `NANOPLOT` when `--plot` is set — the exact same processes
+   `workflows/expert.nf` uses, from `modules/local/raw_qc.nf`.
+4. Trio mode only: `YAK_COUNT` on each normalized parent's reads.
+5. `HIFIASM` → `GFA_TO_FASTA`.
+
+`PREPARE_LONGREADS` is called for up to 3 sources in one run (long reads always, pat/mat in
+trio mode) and `YAK_COUNT` for 2 (pat+mat together) — DSL2 forbids invoking the same process
+more than once in one workflow scope (§3's multi-flowcell note is where the main pipeline first
+hit this), so each is imported under a distinct alias per call site
+(`PREPARE_LONGREADS_LONGREADS`/`_PAT`/`_MAT`, `YAK_COUNT_PAT`/`_MAT`), same pattern as
+`BAM_TO_FASTQ_ULK`/`_POREC`/etc. in `workflows/expert.nf`. `HIFIASM` and `GFA_TO_FASTA` need no
+aliasing — each has exactly one call site (`GFA_TO_FASTA` is fed a flattened 3-item GFA channel
+from one call, fanned out automatically, not looped).
+
+### Tool command references
+```bash
+# PREPARE_LONGREADS — normalize to plain FASTQ, no filtering
+samtools fastq -@ ${task.cpus} ${reads} > longreads.fastq          # .bam
+zcat ${reads} > longreads.fastq                                    # .fastq.gz (merges N files)
+cat ${reads} > longreads.fastq                                     # .fastq
+
+# YAK_COUNT (trio only) — one call per parent
+yak count -b37 -t ${task.cpus} -o ${label}.yak ${reads}
+
+# HIFIASM — --threads is task.cpus, itself params.threads * 2 (see below)
+hifiasm --ont --threads ${task.cpus} --telo-m ${params.telo_motif} --dual-scaf \
+    -o hifiasmONT_asm <MODE_ARGS> longreads.fastq
+# MODE_ARGS: default = (empty) | Hi-C = --h1 ${hic1} --h2 ${hic2} | trio = -1 pat.yak -2 mat.yak
+
+# GFA_TO_FASTA — per p_ctg GFA (collapsed + hap1 + hap2)
+awk '/^S/{print ">" $2 "\n" $3}' ${gfa} > ${gfa.baseName}.fasta
+```
+
+Outputs (infix differs by sub-mode — `bp` default, `hic` Hi-C, `dip` trio), each emitting a
+collapsed `p_ctg` plus `hap1`/`hap2` `p_ctg`: e.g. `hifiasmONT_asm.bp.p_ctg.gfa`,
+`hifiasmONT_asm.bp.hap1.p_ctg.gfa`, `hifiasmONT_asm.bp.hap2.p_ctg.gfa`. `HIFIASM`'s `gfas`
+output matches `hifiasmONT_asm.*.p_ctg.gfa` regardless of sub-mode, so `GFA_TO_FASTA` doesn't
+need to know which sub-mode ran.
+
+`--threads` for hifiasm uses `task.cpus` directly. `withLabel: 'hifiasm'` sets `cpus = {
+params.threads * 2 }`, same as `VERKKO` (§5) — normally the local executor would silently cap
+that back down to the host's real core count, but `nextflow.config` raises the local executor's
+own cpu ceiling to match (`executor { $local { cpus = params.threads * 2 } }`), so it doesn't.
+See §5's `VERKKO` note and `sessions/session.md` for the full reasoning (including why that
+ceiling is safe to raise pipeline-wide for this specific DAG).
+
+### Open questions (leave `// TODO(user):`, don't block)
+1. **`.gz` passthrough.** hifiasm accepts gzipped FASTQ directly; for a single-file `.fastq.gz`
+   input (no merge needed), `PREPARE_LONGREADS`'s normalization could be skipped and the `.gz`
+   fed straight to hifiasm, saving I/O. Not implemented — always normalizes to plain FASTQ.
+2. **Paired-end short-read parents.** `YAK_COUNT` takes one file per parent (long-read case).
+   ONT's paired-end short-read variant uses a double process-substitution
+   (`yak count ... <(cat r1 r2) <(cat r1 r2)`) — not implemented.
+3. **Collapsed vs. haplotypes downstream.** All three GFAs/FASTAs are emitted per sub-mode;
+   which to treat as "the" assembly for downstream use (e.g. the standalone assembly-QC
+   workflow, §10) is left to the user.
+
+### Testing
+None — no `nf-test` coverage for scalable mode (unlike the assembly-QC workflow's 3-tool
+coverage in §10). Matches this pipeline's original "no testing" scope (§1).

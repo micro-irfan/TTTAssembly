@@ -33,6 +33,24 @@ def helpMessage() {
       .bam, or all .fastq/.fastq.gz); they are merged (samtools merge for BAM, concatenation
       for FASTQ) before the rest of the pipeline runs.
 
+    Required (scalable mode):
+      --long_reads      ONT long reads: .bam, .fastq, or .fastq.gz. Comma-separated list
+                        supported (multiple flowcells merge, same as --ulk_reads above).
+
+    Scalable-mode options (sub-mode is auto-selected — see CLAUDE.md §11):
+      --mat_reads / --pat_reads   Maternal/paternal reads for trio phasing (via yak). Both
+                                   required together, or neither. Mutually exclusive with
+                                   --hic_reads_1/2.
+      --hic_reads_1 / --hic_reads_2   Hi-C pair for Hi-C phasing (shared with expert mode).
+                                        Both required together, or neither. Mutually exclusive
+                                        with --mat_reads/--pat_reads.
+      --telo_motif      Telomere motif for `hifiasm --telo-m` (default: ${params.telo_motif})
+      --plot            Also run NanoPlot on the long reads (default: ${params.plot})
+      --threads         Default CPUs per process (default: ${params.threads})
+      --output          Output directory (default: ${params.output})
+
+      Note: --max_memory_gb and --filtering (expert-only) are ignored in scalable mode.
+
     Options:
       --mode            expert | scalable                         (default: ${params.mode})
       --sample          Sample name, prefixes all output filenames (default: ${params.sample})
@@ -64,8 +82,14 @@ def helpMessage() {
         --ulk_reads ulk.bam --hic_reads_1 hic_R1.fastq --hic_reads_2 hic_R2.fastq \\
         --max_memory_gb 480 --output results
 
-    Notes:
-      --mode scalable is a stub for now; it fails fast until its steps are implemented.
+      # Scalable mode, default (dual) sub-mode
+      nextflow run main.nf -profile singularity \\
+        --mode scalable --sample HG002 --long_reads long.bam --output results
+
+      # Scalable mode, trio phasing
+      nextflow run main.nf -profile singularity \\
+        --mode scalable --sample HG002 --long_reads long.bam \\
+        --pat_reads father.fastq --mat_reads mother.fastq --output results
     """.stripIndent()
 }
 
@@ -106,8 +130,23 @@ if (params.mode == 'expert') {
     }
 }
 else if (params.mode == 'scalable') {
-    // Reads-type validation is not enforced for scalable mode (CLAUDE.md §3); the stub
-    // workflow itself fails fast with an informative message.
+    if (!params.long_reads) errors << "--long_reads is required in scalable mode"
+
+    def has_mat  = params.mat_reads as boolean
+    def has_pat  = params.pat_reads as boolean
+    def has_hic1 = params.hic_reads_1 as boolean
+    def has_hic2 = params.hic_reads_2 as boolean
+
+    if (has_mat != has_pat) {
+        errors << "--mat_reads and --pat_reads must both be provided (trio phasing needs both parents)"
+    }
+    if (has_hic1 != has_hic2) {
+        errors << "--hic_reads_1 and --hic_reads_2 must both be provided"
+    }
+    if (has_mat && has_pat && has_hic1 && has_hic2) {
+        errors << "Provide either --mat_reads/--pat_reads (trio) or --hic_reads_1/--hic_reads_2 " +
+                  "(Hi-C), not both — choose one phasing method"
+    }
 }
 else {
     errors << "Unknown --mode '${params.mode}'; expected 'expert' or 'scalable'"

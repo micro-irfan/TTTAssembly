@@ -5,9 +5,11 @@ T2T suggested analysis workflow for `SQK-ULK114` ultra-long reads combined with 
 Assembly is done with **Verkko**. See [CLAUDE.md](CLAUDE.md) for the full spec.
 
 Two modes, selected with `--mode`:
-- `expert` — implemented: samtools (BAM → FASTQ, filtered) → QC (seqkit stats [+ NanoPlot with
-  `--plot`]) → Dorado correct (GPU, ULK only) → Verkko assembly (Pore-C or Hi-C branch).
-- `scalable` — stub only; fails fast until its steps are implemented.
+- `expert` — samtools (BAM → FASTQ, filtered) → QC (seqkit stats [+ NanoPlot with `--plot`]) →
+  Dorado correct (GPU, ULK only) → Verkko assembly (Pore-C or Hi-C branch).
+- `scalable` — samtools (BAM/FASTQ → FASTQ) → QC (same as expert mode) → [yak, trio only] →
+  hifiasm assembly (default / Hi-C / trio phasing, auto-selected from the inputs given). See
+  [CLAUDE.md §11](CLAUDE.md#11-scalable-mode-hifiasm) for the full spec.
 
 ## Requirements
 
