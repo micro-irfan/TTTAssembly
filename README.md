@@ -158,3 +158,35 @@ nf-test test --exclude-tag gpu     # skip the Dorado test on non-GPU runners
 ```
 
 The Verkko/assembly step is intentionally not covered by nf-test (too heavy to run in CI).
+
+## Standalone assembly-QC workflow
+
+`assembly_qc.nf` is a **separate** workflow, independent of the pipeline above — it evaluates
+assembly FASTA(s) directly (contiguity, telomere-capping, gene completeness, k-mer
+QV/completeness), so it works for any species, not just output from this pipeline's own Verkko
+step. See [CLAUDE.md §10](CLAUDE.md#10-standalone-assembly-qc-workflow) for the full spec.
+
+```bash
+# Bacterial/haploid genome, default (read-free) tools
+nextflow run assembly_qc.nf -profile conda --assembly asm.fasta --genome_size 5000000
+
+# Human diploid T2T assembly, full tool set against a CHM13 reference
+nextflow run assembly_qc.nf -profile conda \
+  --assembly combined.fasta --assembly_H1 hap1.fasta --assembly_H2 hap2.fasta \
+  --tools gfastats,seqtk,compleasm,quast,merqury,merfin \
+  --reads 'reads/*.fastq.gz' --merfin_peak 35 \
+  --quast_reference chm13v2.0.fasta
+
+nextflow run assembly_qc.nf --help
+```
+
+Tools: **gfastats** (contiguity), **seqtk telo** (telomere-capped contigs), **compleasm** (gene
+completeness — supersedes BUSCO), **QUAST** (assembly evaluation), **Merqury** (k-mer
+QV/completeness), **Merfin** (read-aware QV*). Selected via `--tools` (default
+`gfastats,seqtk,compleasm`).
+
+**Conda-only for now** — `-profile conda` is the only working engine for this workflow; there
+are no Singularity containers wired up yet for these tools (see CLAUDE.md §10 open questions).
+
+`run_assembly_qc.sh` has a ready-to-edit example for a Human T2T assembly (gfastats + compleasm
++ seqtk telo, plus QUAST against a CHM13 reference).

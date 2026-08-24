@@ -4,7 +4,7 @@
 nextflow_process {
 
     name "Test Process SEQKIT_STATS"
-    script "modules/local/qc.nf"
+    script "modules/local/raw_qc.nf"
     process "SEQKIT_STATS"
 
     test("Summarizes the ULK FASTQ into its own TSV") {

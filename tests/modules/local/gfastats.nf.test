@@ -1,0 +1,30 @@
+// Scaffolding only — no fixtures yet. TODO(user): add a stub assembly FASTA under
+// tests/data/ and wire it in below, then fill in the real assertions.
+// Conda-only workflow (see CLAUDE.md §10) — run with: nf-test test --profile conda <this file>
+
+nextflow_process {
+
+    name "Test Process GFASTATS"
+    script "modules/local/assembly_qc.nf"
+    process "GFASTATS"
+
+    test("Reports contiguity stats for a single assembly") {
+
+        when {
+            params {
+                sample = "test"
+            }
+            process {
+                """
+                // TODO(user): point at a stub assembly FASTA fixture
+                input[0] = [ "combined", file(params.test_data_dir + "/asm_test.fasta"), 5000000 ]
+                """
+            }
+        }
+
+        then {
+            assert process.success
+            // TODO(user): assert on the gfastats report content once stub data exists
+        }
+    }
+}

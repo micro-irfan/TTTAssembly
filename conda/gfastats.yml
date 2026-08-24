@@ -1,0 +1,6 @@
+name: ont-t2t-gfastats
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - gfastats

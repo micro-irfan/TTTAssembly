@@ -4,7 +4,7 @@
 nextflow_process {
 
     name "Test Process NANOPLOT"
-    script "modules/local/qc.nf"
+    script "modules/local/raw_qc.nf"
     process "NANOPLOT"
 
     test("Produces a NanoPlot report for the ULK FASTQ") {

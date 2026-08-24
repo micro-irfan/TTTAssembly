@@ -145,7 +145,8 @@ ont-t2t-assembly/
 ├── modules/
 │   └── local/
 │       ├── common.nf             # BAM_TO_FASTQ (samtools-based read merge + filter/convert)
-│       ├── qc.nf                 # SEQKIT_STATS + NANOPLOT (NANOPLOT gated by --plot)
+│       ├── raw_qc.nf             # SEQKIT_STATS + NANOPLOT (NANOPLOT gated by --plot) — raw-reads QC,
+│       │                         # distinct from assembly QC (planned, see session_assembly_qc.md)
 │       ├── dorado_correct.nf     # DORADO_CORRECT (GPU)
 │       ├── verkko.nf             # VERKKO (porec + hic handled with optional inputs)
 │       ├── tool_versions.nf      # SAMTOOLS_VERSION + QC_VERSIONS + DORADO_VERSION + VERKKO_VERSION
@@ -182,7 +183,7 @@ doesn't need updating when a process gets a new `include { X as Y }` alias in a 
 process definition regardless of what it's invoked as. Labels in use: `samtools`, `qc`,
 `dorado`, `verkko` (one per container/conda env — see §7), plus `gpu` (adds `--nv`; only
 `DORADO_CORRECT`) and `quick` (cuts cpus/memory for the five tiny version-capture processes).
-Related processes that share a label are grouped into one file (`common.nf`, `qc.nf`,
+Related processes that share a label are grouped into one file (`common.nf`, `raw_qc.nf`,
 `tool_versions.nf`) rather than one-process-per-file.
 
 ### `common.nf` — samtools-based read merge + filter/convert
@@ -269,9 +270,9 @@ process BAM_TO_FASTQ {
   Dorado/Verkko silently. `errorStrategy = 'terminate'` (set in `nextflow.config`) stops the
   whole run as soon as this — or any — task fails.
 
-### `qc.nf` — read summary / QC
+### `raw_qc.nf` — raw-reads summary / QC
 
-#### `SEQKIT_STATS` (modules/local/qc.nf)
+#### `SEQKIT_STATS` (modules/local/raw_qc.nf)
 Imported once per read source in `expert.nf` — `SEQKIT_STATS_ULK`, `SEQKIT_STATS_POREC`,
 `SEQKIT_STATS_CORRECTED` (DSL2 forbids invoking the same process name twice in one workflow
 scope; see the multi-flowcell note in §3) — so ULK, Pore-C (if present), and the
@@ -290,7 +291,7 @@ process SEQKIT_STATS {
 - `-j ${task.cpus}` threads seqkit the same way `-@ ${task.cpus}` threads samtools — comes from
   the `cpus` directive in `nextflow.config`, not hard-coded.
 
-#### `NANOPLOT` (modules/local/qc.nf)
+#### `NANOPLOT` (modules/local/raw_qc.nf)
 Run on the ultra-long FASTQ only (that's where read-length/N50 matters for this workflow).
 Only invoked when `--plot` is set (opt-in; see §3) — `SEQKIT_STATS` always runs regardless.
 ```groovy
@@ -468,7 +469,7 @@ nextflow run main.nf -profile singularity \
   assigns containers/conda envs/resources by `withLabel:`, not `withName:`, so config wiring
   survives a process being aliased (`include { X as Y }`) at however many call sites a workflow
   needs. Group related processes that share a label into one module file (e.g. `common.nf`,
-  `qc.nf`, `tool_versions.nf`) rather than one-process-per-file — the filename is irrelevant to
+  `raw_qc.nf`, `tool_versions.nf`) rather than one-process-per-file — the filename is irrelevant to
   config wiring either way.
 - No hard-coded resources in modules — resources and `container`/`conda` come from
   `nextflow.config`.
@@ -478,3 +479,141 @@ nextflow run main.nf -profile singularity \
 - `scalable.nf` must exist and fail cleanly: `error "scalable mode not yet implemented"`.
 - Don't touch `nextflow.config` or the `singularity/*/*.def` files unless a bug blocks the
   build; if you do, note it in `session.md`.
+
+---
+
+## 10. Standalone assembly-QC workflow
+
+A **separate** Nextflow (DSL2) workflow — `assembly_qc.nf` at the repo root — that QC's one or
+more assembly FASTAs (contiguity, telomere-capping, gene completeness, k-mer QV/completeness).
+Species-agnostic: takes assembly FASTA(s) directly rather than reading through the assembler, so
+it works for bacteria, human, anything. It does **not** chain off the assembly pipeline above —
+`main.nf`, `workflows/expert.nf`, and `workflows/scalable.nf` are untouched by this feature.
+Full history/decisions/open questions: `sessions/session_assembly_qc.md`.
+
+### Design
+- Entry: `assembly_qc.nf` (repo root) — `--help`, fail-fast param validation, dispatches to the
+  reusable `ASSEMBLY_QC` workflow (`workflows/assembly_qc.nf`, alongside `expert.nf`/
+  `scalable.nf` — no separate `subworkflows/` directory). All 8 processes live in one module
+  file, `modules/local/assembly_qc.nf`, grouped for fewer directories rather than by shared
+  label (unlike `common.nf`/`raw_qc.nf`/`tool_versions.nf`, these 8 are 8 separate conda envs).
+- Assembly list is built from what's provided: always `['combined', --assembly]`; adds
+  `['h1', --assembly_H1]` / `['h2', --assembly_H2]` when given. A bacterial run is just
+  `--assembly` with a bacterial `--compleasm_lineage`; a human run adds the haplotypes and the
+  telomere/QV tools.
+- Tools: **gfastats** (contiguity), **seqtk telo** (telomere-capped contigs), **compleasm**
+  (gene completeness — supersedes BUSCO, not used here), **QUAST** (assembly evaluation),
+  **Merqury** (k-mer QV/completeness), **Merfin** (read-aware QV*). Selected via `--tools`.
+
+### Provisioning — conda only, for now
+Each of the 8 processes in `modules/local/assembly_qc.nf` carries its own `label` (one per
+tool — a distinct conda env per process, same one-label-per-env pattern as the main pipeline's
+`samtools`/`qc`/`dorado`/`verkko` labels), assigned in `nextflow.config`'s
+`profiles { conda { process { withLabel: ... } } } }`.
+**No `container` directive exists for any of these yet** — `-profile singularity` is not
+functional for this workflow until `.def` recipes are added and a matching
+`profiles { singularity { process { withLabel: ... { container = ... } } } }` block is wired up.
+Env YAMLs live in the existing `conda/` directory (not a separate one) — `conda/gfastats.yml`,
+`conda/seqtk.yml`, `conda/compleasm.yml`, `conda/quast.yml`, `conda/meryl.yml`,
+`conda/merqury.yml`, `conda/genomescope2.yml`, `conda/merfin.yml`. One env per process — don't
+merge tools into a shared env.
+
+Using labels here (rather than hardcoding `conda`/`container` directly on each process, as an
+earlier draft of this feature's kickoff doc proposed) means tuning cpus/memory per tool later is
+a one-line `withLabel:` addition in `nextflow.config`, not a module edit.
+
+### Parameters (`nextflow.config`; `--output`/`--sample` intentionally NOT redeclared there — see below)
+| Param | Default | Meaning |
+|---|---|---|
+| `--assembly` | `null` | **Required.** Primary/combined assembly FASTA. |
+| `--assembly_H1` | `null` | Optional haplotype 1 FASTA. |
+| `--assembly_H2` | `null` | Optional haplotype 2 FASTA. |
+| `--tools` | `gfastats,seqtk,compleasm` | Comma-separated subset of `{gfastats,seqtk,compleasm,quast,merqury,merfin}`, or `none`. |
+| `--output` | `assembly_qc`* | Output directory. |
+| `--sample` | `assembly`* | Output prefix. |
+| `--genome_size` | `3100000000` | Haploid expected size (bp) — gfastats NGx, QUAST `--est-ref-size`, GenomeScope2. |
+| `--ploidy` | `2` | 1 = bacteria/haploid, 2 = diploid — GenomeScope2/Merfin. |
+| `--reads` | `null` | Reads for the meryl k-mer DB (quoted glob). **Required if `--tools` includes `merqury` or `merfin`.** Prefer accurate reads (Illumina/HiFi). |
+| `--meryl_k` | `21` | k-mer size for meryl/Merqury/Merfin. |
+| `--merfin_peak` | `null` | Homozygous k-mer coverage peak for Merfin. **Required if `--tools` includes `merfin`** (auto-derivation from GenomeScope2 output is not implemented — see Open questions). |
+| `--compleasm_lineage` | `primates` | e.g. `primates`, `mammalia`, `bacteria`, `eukaryota`. |
+| `--compleasm_downloads` | `null` | Optional pre-downloaded lineage dir (`-L`); enables offline compleasm. |
+| `--quast_reference` | `null` | Optional reference FASTA for reference-based QUAST. Default = reference-free. |
+| `--quast_large` | `null` | `true`/`false` to force QUAST `--large`. If unset, auto-enables when `genome_size > 100 Mb`. |
+
+\* `--output`/`--sample` are **not** declared in `nextflow.config`'s params (that file is shared
+with `main.nf`; a second default for the same key there would silently win for both entry
+scripts — Nextflow evaluates every `params{}` block in the file regardless of which script you
+run). Instead `assembly_qc.nf` applies `'assembly_qc'`/`'assembly'` itself, but only when the
+value is still exactly the inherited main-pipeline default (`'results'`/`'sample'`) — i.e. only
+when the user didn't pass `--output`/`--sample` explicitly.
+
+### `--tools` parsing rules
+- Split on commas, trim, lowercase. Every token must be in
+  `{gfastats,seqtk,compleasm,quast,merqury,merfin}` — else fail listing the bad token(s).
+- `none` or empty → run nothing, don't error.
+- `merqury` or `merfin` without `--reads` → fail. `merfin` without `--merfin_peak` → fail.
+- All validated fail-fast in `assembly_qc.nf`, before any process launches.
+
+### Which assemblies each tool runs on
+- `gfastats`, `seqtk`, `compleasm`, `merfin`: **per assembly** in the list (1–3 of
+  combined/h1/h2). Nextflow DSL2 forbids invoking the same process more than once in one
+  workflow scope (see §3's multi-flowcell note for where the main pipeline hit this) — so each
+  of these is called **once** in `workflows/assembly_qc.nf`, fed a single channel of
+  `(label, fasta[, size])` tuples covering every assembly; Nextflow fans that out into one task
+  per item automatically, rather than looping and calling the process per assembly.
+- `quast`: **one run** over all provided assemblies together.
+- `merqury`: diploid mode (`merqury.sh db h1 h2 out`) when H1 & H2 are both provided, else
+  single mode against the combined assembly.
+- `meryl_count` (shared upstream, built once): runs if `merqury` or `merfin` is requested.
+  `genomescope2`: runs only if `merfin` is requested (Merfin needs its lookup table).
+
+### Tool command references
+```bash
+# gfastats — size(combined) = 2*genome_size iff both haplotypes provided, else genome_size;
+# size(hap) = genome_size always
+gfastats ${fasta} ${expected_size} > ${prefix}.gfastats
+
+# seqtk telo — keep intermediates AND the both-ends-capped contig count
+seqtk telo ${fasta} > ${prefix}.telo.bed 2> ${prefix}.telo.count
+both_ends=$(cut -f1 ${prefix}.telo.bed | sort | uniq -d | wc -l)
+
+# compleasm
+compleasm run -a ${fasta} -o compleasm_${label} -l ${params.compleasm_lineage} -t ${task.cpus} \
+    ${params.compleasm_downloads ? "-L ${params.compleasm_downloads}" : ""}
+
+# QUAST — one run, all assemblies; --large auto by genome size unless --quast_large forces it
+quast.py -t ${task.cpus} -o quast --est-ref-size ${params.genome_size} \
+    ${large ? "--large" : ""} ${params.quast_reference ? "-r ${params.quast_reference}" : ""} \
+    ${all_assembly_fastas}
+
+# Merqury (MERYL_COUNT builds the shared DB first)
+meryl count k=${params.meryl_k} threads=${task.cpus} ${reads} output reads.meryl
+meryl histogram reads.meryl > reads.hist
+merqury.sh reads.meryl ${assemblies_for_merqury} ${params.sample}_merqury
+
+# Merfin (GenomeScope2 first, for the -prob lookup table)
+genomescope2 -i reads.hist -o genomescope -k ${params.meryl_k} -p ${params.ploidy} --fitted_hist
+merfin -hist -sequence ${fasta} -readmers reads.meryl -prob genomescope/lookup_table.txt \
+    -peak ${params.merfin_peak} -output ${prefix}.merfin
+```
+
+### Open questions (leave `// TODO(user):`, don't block)
+1. **Merfin peak auto-derivation.** Parsing the homozygous coverage peak (`kmercov`) from
+   GenomeScope2's output is brittle across versions — not implemented. `--merfin_peak` is
+   required (fails fast if missing while `merfin` is requested) rather than attempting fragile
+   parsing.
+2. **Singularity container tags.** No `container` directives exist yet for any of the 8 tools —
+   deferred until `.def` recipes are added for the ones worth containerizing.
+3. **QV read source quality.** Merqury/Merfin QV is only as good as `--reads`; ONT-corrected
+   reads under-report QV vs Illumina/HiFi. Merfin's QV* partly compensates.
+4. **`meryl_k` for small genomes.** k=21 suits large genomes; bacteria may want smaller.
+
+### Testing
+nf-test scaffolding (TODO fixtures, same style as the main pipeline's `tests/`) exists for
+`GFASTATS`, `COMPLEASM`, `SEQTK_TELO` only — not the read-dependent/shared tools. Conda-only, so
+run with an explicit profile override rather than the shared `nf-test.config` default (that
+default is the main pipeline's singularity-based `test` profile):
+```bash
+nf-test test --profile conda tests/modules/local/{gfastats,compleasm,seqtk_telo}.nf.test
+```

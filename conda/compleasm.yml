@@ -1,0 +1,7 @@
+name: ont-t2t-compleasm
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  # >=0.2.7 needed for OrthoDB v12 lineages — see CLAUDE.md §10.
+  - compleasm>=0.2.7

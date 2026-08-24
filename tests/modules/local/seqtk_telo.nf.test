@@ -1,0 +1,31 @@
+// Scaffolding only — no fixtures yet. TODO(user): add a stub assembly FASTA under
+// tests/data/ and wire it in below, then fill in the real assertions.
+// Conda-only workflow (see CLAUDE.md §10) — run with: nf-test test --profile conda <this file>
+
+nextflow_process {
+
+    name "Test Process SEQTK_TELO"
+    script "modules/local/assembly_qc.nf"
+    process "SEQTK_TELO"
+
+    test("Detects telomere-capped contigs for a single assembly") {
+
+        when {
+            params {
+                sample = "test"
+            }
+            process {
+                """
+                // TODO(user): point at a stub assembly FASTA fixture (ideally with a
+                // telomere-repeat-bearing contig to exercise the both-ends-capped metric)
+                input[0] = [ "combined", file(params.test_data_dir + "/asm_test.fasta") ]
+                """
+            }
+        }
+
+        then {
+            assert process.success
+            // TODO(user): assert .telo.bed / .telo.both_ends.tsv content once stub data exists
+        }
+    }
+}

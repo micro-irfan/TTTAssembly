@@ -55,3 +55,32 @@ jobs:
 
       - name: Run nf-test
         run: nf-test test --exclude-tag gpu
+
+  assembly-qc:
+    # Standalone workflow (assembly_qc.nf, see CLAUDE.md §10) — separate entry point, conda-only
+    # for now (no Singularity containers wired up yet for these tools).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nextflow
+        uses: nf-core/setup-nextflow@v2
+        with:
+          version: "23.10.0"
+
+      - name: Pipeline parses (--help)
+        run: nextflow run assembly_qc.nf --help
+
+      - name: Install nf-test
+        uses: nf-core/setup-nf-test@v1
+
+      - name: Install Micromamba
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          micromamba-version: latest
+          init-shell: bash
+
+      # Only the read-free, per-assembly tools have nf-test coverage (see CLAUDE.md §10
+      # "Testing") — quast/merqury/merfin/genomescope2/meryl_count don't yet.
+      - name: Run nf-test (conda profile)
+        run: nf-test test --profile conda tests/modules/local/{gfastats,compleasm,seqtk_telo}.nf.test

@@ -1,0 +1,6 @@
+name: ont-t2t-seqtk
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - seqtk

@@ -1,5 +1,6 @@
-// qc.nf
-// Read summary / QC on the ULK + Pore-C FASTQs.
+// raw_qc.nf
+// Read summary / QC on the ULK + Pore-C FASTQs — raw-reads QC, distinct from assembly QC
+// (QUAST/Merqury/BUSCO/etc., planned separately — see sessions/session_assembly_qc.md).
 
 // SEQKIT_STATS
 // Read summary / QC statistics, always run. Called once per read source (ULK, Pore-C,

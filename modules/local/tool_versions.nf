@@ -23,7 +23,7 @@ process SAMTOOLS_VERSION {
 
 // QC_VERSIONS
 // Captures both seqkit and NanoPlot in one process — same qc container as SEQKIT_STATS/NANOPLOT
-// (modules/local/qc.nf).
+// (modules/local/raw_qc.nf).
 
 process QC_VERSIONS {
     tag "${params.sample}"

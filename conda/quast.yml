@@ -1,0 +1,6 @@
+name: ont-t2t-quast
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - quast

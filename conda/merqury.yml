@@ -1,0 +1,9 @@
+name: ont-t2t-merqury
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  # Pulls meryl in transitively (merqury.sh shells out to it), separate from conda/meryl.yml's
+  # own env — MERYL_COUNT (label 'meryl') and MERQURY (label 'merqury') are still separate
+  # processes/envs per the "one env per process" rule; this is just merqury.sh's own dependency.
+  - merqury

@@ -1,0 +1,6 @@
+name: ont-t2t-merfin
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - merfin
