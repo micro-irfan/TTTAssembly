@@ -475,7 +475,13 @@ Two mutually-exclusive engines, selected with `-profile singularity` (default) o
 conda`. `nextflow.config` assigns these by `withLabel:` (see §5) rather than `withName:`, so it
 doesn't matter that `BAM_TO_FASTQ` and `SEQKIT_STATS` are each imported under several aliases in
 `workflows/expert.nf` (§3's multi-flowcell note) — the label lives on the
-process definition, not the alias.
+process definition, not the alias. Both `container` and `conda` are set together, unconditionally,
+on each `withLabel:` block in the single top-level `process {}` scope — `-profile
+singularity`/`-profile conda` each only flip `singularity.enabled`/`conda.enabled`, which
+determines which of the two directives Nextflow actually consults; the other sits inert. (An
+earlier version split `container`/`conda` across separate `process {}` blocks nested inside
+`profiles { singularity { ... } }` / `profiles { conda { ... } } }` — consolidated into one block
+after that produced unreliable cpu/memory resolution in practice; see `sessions/session.md`.)
 
 | Process | Singularity image | Conda env | Base / install |
 |---|---|---|---|
@@ -572,12 +578,13 @@ Full history/decisions/open questions: `sessions/session_assembly_qc.md`.
 ### Provisioning — conda only, for now
 Each of the 8 processes in `modules/local/assembly_qc.nf` carries its own `label` (one per
 tool — a distinct conda env per process, same one-label-per-env pattern as the main pipeline's
-`samtools`/`qc`/`dorado`/`verkko` labels), assigned in `nextflow.config`'s
-`profiles { conda { process { withLabel: ... } } } }`.
+`samtools`/`qc`/`dorado`/`verkko` labels), assigned inside the single top-level `process {}`
+scope in `nextflow.config` (same block as every other label — see §5/§7, not a separate
+profile-scoped block).
 **No `container` directive exists for any of these yet** — `-profile singularity` is not
-functional for this workflow until `.def` recipes are added and a matching
-`profiles { singularity { process { withLabel: ... { container = ... } } } }` block is wired up.
-Env YAMLs live in the existing `conda/` directory (not a separate one) — `conda/gfastats.yml`,
+functional for this workflow until `.def` recipes are added and a `container = ...` line is
+added to each of these `withLabel:` blocks (same block, no separate profile-scoped one needed —
+see §7). Env YAMLs live in the existing `conda/` directory (not a separate one) — `conda/gfastats.yml`,
 `conda/seqtk.yml`, `conda/compleasm.yml`, `conda/quast.yml`, `conda/meryl.yml`,
 `conda/merqury.yml`, `conda/genomescope2.yml`, `conda/merfin.yml`. One env per process — don't
 merge tools into a shared env.
