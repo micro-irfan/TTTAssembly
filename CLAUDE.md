@@ -359,18 +359,19 @@ process VERKKO {
     tuple path(hic1), path(hic2)   // may be [ [], [] ]
 
     output:
-    path "${VERKKO_DIR}/**",                        emit: assembly
-    path "${VERKKO_DIR}/assembly.fasta",            emit: assembly_fasta
-    path "${VERKKO_DIR}/assembly.haplotype1.fasta", emit: haplotype1_fasta
-    path "${VERKKO_DIR}/assembly.haplotype2.fasta", emit: haplotype2_fasta
+    path "verkko_out/**",                        emit: assembly
+    path "verkko_out/assembly.fasta",            emit: assembly_fasta
+    path "verkko_out/assembly.haplotype1.fasta", emit: haplotype1_fasta
+    path "verkko_out/assembly.haplotype2.fasta", emit: haplotype2_fasta
 
     script:
     def reads_arg = porec_fastq ? "--porec ${porec_fastq}" : "--hic1 ${hic1} --hic2 ${hic2}"
     """
     mkdir -p ${VERKKO_DIR}
+    ln -sfn ${VERKKO_DIR} verkko_out
     verkko --nano ${nano_fastq} --hifi ${hifi_fasta} ${reads_arg} \
         --no-correction --local-memory ${params.max_memory_gb} --local-cpus ${task.cpus} \
-        -d ${VERKKO_DIR}
+        -d verkko_out
     """
 }
 ```
@@ -394,14 +395,23 @@ process VERKKO {
   start the retry in a brand-new, empty ephemeral work dir, discarding any progress Verkko had
   made. Pointing `-d` at a fixed absolute path under `${params.output}` instead means Verkko
   finds its own prior state there and resumes internally regardless of what Nextflow's own
-  work-dir hashing/`-resume` decides. Must be an **absolute** path — the script block's CWD is
-  still the task's ephemeral work dir, so a bare `${params.output}/...` would resolve inside
-  that instead of the intended stable location; `file(params.output).toAbsolutePath()` resolves
-  it against the launch directory (the same semantics `params.output` already has via
-  `publishDir` elsewhere in this pipeline) before the path gets locked in. Consequence: the
-  published layout is `${params.output}/${params.sample}/verkko/...`, not the old flat
-  `${params.output}/verkko_output/...` — mirrors how scalable mode already publishes hifiasm's
-  output under `${params.output}/${params.sample}/`.
+  work-dir hashing/`-resume` decides. `VERKKO_DIR` itself must be an **absolute** path — the
+  script block's CWD is still the task's ephemeral work dir, so a bare `${params.output}/...`
+  would resolve inside that instead of the intended stable location; `file(params.output).
+  toAbsolutePath()` resolves it against the launch directory (the same semantics
+  `params.output` already has via `publishDir` elsewhere in this pipeline) before the path gets
+  locked in. Consequence: the published layout is `${params.output}/${params.sample}/verkko/...`,
+  not the old flat `${params.output}/verkko_output/...` — mirrors how scalable mode already
+  publishes hifiasm's output under `${params.output}/${params.sample}/`.
+- **`output: path` can't target `VERKKO_DIR` directly** — Nextflow requires declared outputs to
+  resolve inside the task's own ephemeral work directory; a raw absolute path outside it throws
+  `IllegalFileException: File ... is outside the scope of the process work directory` (hit in
+  practice — see `sessions/session.md`). The fix: `ln -sfn ${VERKKO_DIR} verkko_out` inside the
+  script, `-d verkko_out` (the relative symlink, not the absolute path) as Verkko's own argument,
+  and `output: path "verkko_out/**"` etc. as the declarations. Verkko writes through the symlink
+  to the same persistent `VERKKO_DIR` target either way (its resume logic operates on the
+  resolved files, not the path label used to reach them), while Nextflow sees an ordinary
+  work-dir-local entry to stage as this task's output.
 - Since the process now writes directly to its final location, `publishDir` was removed for
   `VERKKO` — there is nothing left to copy. Running the same `--sample`/`--output` combination
   concurrently (two overlapping `nextflow run` invocations) would now collide on the same
@@ -737,11 +747,13 @@ cat ${reads} > longreads.fastq                                     # .fastq
 # YAK_COUNT (trio only) — one call per parent
 yak count -b37 -t ${task.cpus} -o ${label}.yak ${reads}
 
-# HIFIASM — -t is task.cpus, itself params.threads directly (see below); -o points at
-# HIFIASM_DIR, a stable path, not the ephemeral task work dir (see below). hifiasm has no
-# --threads long option, only -t (checked against its ketopt long_options table).
+# HIFIASM — -t is task.cpus, itself params.threads directly (see below); -o points through a
+# work-dir-local symlink at HIFIASM_DIR, a stable path, not the ephemeral task work dir directly
+# (see below). hifiasm has no --threads long option, only -t (checked against its ketopt
+# long_options table).
+ln -sfn ${HIFIASM_DIR} hifiasm_out
 hifiasm --ont -t ${task.cpus} --telo-m ${params.telo_motif} --dual-scaf \
-    -o ${HIFIASM_DIR}/hifiasmONT_asm <MODE_ARGS> longreads.fastq
+    -o hifiasm_out/hifiasmONT_asm <MODE_ARGS> longreads.fastq
 # MODE_ARGS: default = (empty) | Hi-C = --h1 ${hic1} --h2 ${hic2} | trio = -1 pat.yak -2 mat.yak
 
 # GFA_TO_FASTA — per p_ctg GFA (collapsed + hap1 + hap2)
@@ -772,11 +784,20 @@ stage — conceptually the same problem `VERKKO_DIR` solves for Verkko's Snakema
 prefix-keyed checkpoint mechanism instead of a DAG. Without a stable prefix, a re-run that
 changes `--threads` (or anything else that changes the task hash) would land in a fresh,
 empty ephemeral work dir and lose those `.bin` files, forcing a full recompute. `HIFIASM` has
-no `publishDir` — it writes directly to `HIFIASM_DIR` — and its `output:` paths are the
-absolute `${HIFIASM_DIR}/hifiasmONT_asm*` / `${HIFIASM_DIR}/hifiasmONT_asm.*.p_ctg.gfa` rather
-than the old relative, task-work-dir-copied paths. Same concurrent-run caveat as `VERKKO_DIR`:
-overlapping `nextflow run` invocations for the same `--sample`/`--output` collide on this
-directory.
+no `publishDir` — it writes through a symlink directly to `HIFIASM_DIR`.
+
+`output: path` can't target `HIFIASM_DIR` directly, same restriction as `VERKKO_DIR` (§5):
+Nextflow requires declared outputs to resolve inside the task's own ephemeral work directory: a
+raw absolute path outside it throws `IllegalFileException: File ... is outside the scope of the
+process work directory` (hit in practice — see `sessions/session.md`). The fix is the same
+symlink trick as `VERKKO`: `ln -sfn ${HIFIASM_DIR} hifiasm_out` inside the script, `-o
+hifiasm_out/hifiasmONT_asm` (the relative symlink, not the absolute path) as hifiasm's own
+argument, and `output: path "hifiasm_out/hifiasmONT_asm*"` /
+`path "hifiasm_out/hifiasmONT_asm.*.p_ctg.gfa"` as the declarations — hifiasm writes through the
+symlink to the same persistent `HIFIASM_DIR` target either way (its checkpoint-reuse logic
+operates on the resolved files, not the path label used to reach them). Same concurrent-run
+caveat as `VERKKO_DIR`: overlapping `nextflow run` invocations for the same `--sample`/`--output`
+collide on this directory.
 
 ### Open questions (leave `// TODO(user):`, don't block)
 1. **`.gz` passthrough.** hifiasm accepts gzipped FASTQ directly; for a single-file `.fastq.gz`

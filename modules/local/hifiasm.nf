@@ -8,17 +8,25 @@
 // a `gfas` channel matching all three p_ctg GFAs regardless of which sub-mode ran (default:
 // bp.*, Hi-C: hic.*, trio: dip.*).
 //
-// Runs in a STABLE directory under ${params.output}, not the ephemeral per-task work dir — same
-// rationale and mechanism as VERKKO_DIR (modules/local/verkko.nf). hifiasm caches its
+// hifiasm's actual data lives in a STABLE directory under ${params.output}, not the ephemeral
+// per-task work dir — same rationale as VERKKO_DIR (modules/local/verkko.nf). hifiasm caches its
 // error-corrected reads and all-vs-all overlaps in binary checkpoint files (*.ec.bin,
 // *.ovlp.reverse.bin, *.ovlp.source.bin) next to its output prefix, and on a subsequent run with
 // the same prefix it detects and reuses them instead of recomputing that stage. If a re-run
 // changes --threads (or anything else that changes this task's hash), Nextflow would normally
 // start the retry in a brand-new empty work dir, losing those .bin files and forcing a full
 // recompute. Pointing the output prefix at a fixed absolute path instead means hifiasm finds its
-// own prior checkpoint files there on any re-run. Must be an absolute path for the same reason
-// as VERKKO_DIR: the script block's CWD is the task's own ephemeral work dir, so a bare
-// `${params.output}/...` would resolve inside that instead of the intended stable location.
+// own prior checkpoint files there on any re-run.
+//
+// That absolute path can't be used directly as this process's `output: path` target, though —
+// Nextflow requires declared outputs to resolve inside the task's own work directory (an
+// `IllegalFileException` — "File ... is outside the scope of the process work directory" — is
+// thrown otherwise; see sessions/session.md). So the script instead symlinks a work-dir-local
+// name (`hifiasm_out`) to HIFIASM_DIR and gives hifiasm's -o that relative symlink as its output
+// prefix, not the raw absolute path: hifiasm writes through the symlink to the same stable,
+// persistent location (its own checkpoint-reuse logic operates on the resolved target regardless
+// of what path label reached it), while Nextflow sees a normal work-dir-local entry to stage as
+// this task's output.
 def HIFIASM_DIR = "${file(params.output).toAbsolutePath()}/${params.sample}/hifiasm"
 
 process HIFIASM {
@@ -33,8 +41,8 @@ process HIFIASM {
     tuple path(pat_yak), path(mat_yak) // may be [ [], [] ] outside trio mode
 
     output:
-    path "${HIFIASM_DIR}/hifiasmONT_asm*",            emit: all
-    path "${HIFIASM_DIR}/hifiasmONT_asm.*.p_ctg.gfa", emit: gfas
+    path "hifiasm_out/hifiasmONT_asm*",            emit: all
+    path "hifiasm_out/hifiasmONT_asm.*.p_ctg.gfa", emit: gfas
 
     script:
     def mode_args = hic1
@@ -47,8 +55,9 @@ process HIFIASM {
     // ketopt long_options table for v0.25.0 — thread count is parsed solely via `-t`).
     """
     mkdir -p ${HIFIASM_DIR}
+    ln -sfn ${HIFIASM_DIR} hifiasm_out
     hifiasm --ont -t ${task.cpus} --telo-m ${params.telo_motif} --dual-scaf \
-        -o ${HIFIASM_DIR}/hifiasmONT_asm ${mode_args} ${longreads}
+        -o hifiasm_out/hifiasmONT_asm ${mode_args} ${longreads}
     """
 }
 
