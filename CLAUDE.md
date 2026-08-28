@@ -342,11 +342,15 @@ process DORADO_CORRECT {
 
 ### `VERKKO` (modules/local/verkko.nf)
 Handle both branches with optional inputs. Pass empty file lists for the branch that isn't used.
+Runs in a **stable directory under `${params.output}`**, not the ephemeral per-task work dir —
+see the note below.
 ```groovy
+def VERKKO_DIR = "${file(params.output).toAbsolutePath()}/${params.sample}/verkko"
+
 process VERKKO {
     tag "${params.sample}"
     label 'verkko'
-    publishDir "${params.output}", mode: 'copy'
+    // No publishDir — Verkko already writes directly into VERKKO_DIR, under ${params.output}.
 
     input:
     path nano_fastq          // uncorrected ULK
@@ -355,14 +359,18 @@ process VERKKO {
     tuple path(hic1), path(hic2)   // may be [ [], [] ]
 
     output:
-    path "verkko_output/**", emit: assembly
+    path "${VERKKO_DIR}/**",                        emit: assembly
+    path "${VERKKO_DIR}/assembly.fasta",            emit: assembly_fasta
+    path "${VERKKO_DIR}/assembly.haplotype1.fasta", emit: haplotype1_fasta
+    path "${VERKKO_DIR}/assembly.haplotype2.fasta", emit: haplotype2_fasta
 
     script:
     def reads_arg = porec_fastq ? "--porec ${porec_fastq}" : "--hic1 ${hic1} --hic2 ${hic2}"
     """
+    mkdir -p ${VERKKO_DIR}
     verkko --nano ${nano_fastq} --hifi ${hifi_fasta} ${reads_arg} \
         --no-correction --local-memory ${params.max_memory_gb} --local-cpus ${task.cpus} \
-        -d verkko_output
+        -d ${VERKKO_DIR}
     """
 }
 ```
@@ -371,13 +379,33 @@ process VERKKO {
   pick the cleaner one. The key outputs to expose are `assembly.fasta`,
   `assembly.haplotype1.fasta`, `assembly.haplotype2.fasta`.
 - `--local-cpus` uses `task.cpus` directly. `withLabel: 'verkko'` sets `cpus = { params.threads
-  * 2 }` (Verkko's internal thread pool benefits from 2x oversubscription) — this alone would
-  normally get silently capped back down to the host's real core count by the local executor's
-  auto-detected ceiling, so `nextflow.config` also raises that ceiling explicitly
-  (`executor { $local { cpus = params.threads * 2 } }`), which both removes the cap **and**
-  keeps Nextflow's own scheduling honest about Verkko's real cpu usage (previously this was
-  worked around by computing a `local_cpus` value in the script, decoupled from `task.cpus` —
-  simplified once the executor ceiling was raised instead; see `sessions/session.md`).
+  }` — `--threads` is meant for the assembler itself, passed straight through uncapped. Every
+  other process's `cpus` is capped at `Math.min(params.threads as int, 48)` instead (see the
+  `process {}` default in `nextflow.config`) — support work (format conversion, QC, correction)
+  doesn't need or benefit from arbitrarily large core counts. An earlier version doubled this
+  (`cpus = params.threads * 2`, meant to intentionally oversubscribe Verkko's internal thread
+  pool) with a matching `executor { $local { cpus = params.threads * 2 } }` ceiling-raise to
+  stop the local executor silently capping that back down — dropped after HIFIASM's identical
+  trick produced a segfault in practice (see `sessions/session.md`) rather than the intended
+  doubled thread count.
+- **`VERKKO_DIR` (stable output dir, not `publishDir`)**: Verkko manages its own Snakemake-based
+  incremental state inside its `-d` directory. If a re-run changes `--threads`/
+  `--max_memory_gb` (or anything else that changes this task's hash), Nextflow would normally
+  start the retry in a brand-new, empty ephemeral work dir, discarding any progress Verkko had
+  made. Pointing `-d` at a fixed absolute path under `${params.output}` instead means Verkko
+  finds its own prior state there and resumes internally regardless of what Nextflow's own
+  work-dir hashing/`-resume` decides. Must be an **absolute** path — the script block's CWD is
+  still the task's ephemeral work dir, so a bare `${params.output}/...` would resolve inside
+  that instead of the intended stable location; `file(params.output).toAbsolutePath()` resolves
+  it against the launch directory (the same semantics `params.output` already has via
+  `publishDir` elsewhere in this pipeline) before the path gets locked in. Consequence: the
+  published layout is `${params.output}/${params.sample}/verkko/...`, not the old flat
+  `${params.output}/verkko_output/...` — mirrors how scalable mode already publishes hifiasm's
+  output under `${params.output}/${params.sample}/`.
+- Since the process now writes directly to its final location, `publishDir` was removed for
+  `VERKKO` — there is nothing left to copy. Running the same `--sample`/`--output` combination
+  concurrently (two overlapping `nextflow run` invocations) would now collide on the same
+  `VERKKO_DIR`; not a new pipeline-level guard, same as any other shared-output-path scenario.
 
 ### Tool versions (modules/local/tool_versions.nf + software_versions.nf)
 One tiny version-capture process per label already used elsewhere in the pipeline (so it reuses
@@ -709,9 +737,11 @@ cat ${reads} > longreads.fastq                                     # .fastq
 # YAK_COUNT (trio only) — one call per parent
 yak count -b37 -t ${task.cpus} -o ${label}.yak ${reads}
 
-# HIFIASM — --threads is task.cpus, itself params.threads * 2 (see below)
-hifiasm --ont --threads ${task.cpus} --telo-m ${params.telo_motif} --dual-scaf \
-    -o hifiasmONT_asm <MODE_ARGS> longreads.fastq
+# HIFIASM — -t is task.cpus, itself params.threads directly (see below); -o points at
+# HIFIASM_DIR, a stable path, not the ephemeral task work dir (see below). hifiasm has no
+# --threads long option, only -t (checked against its ketopt long_options table).
+hifiasm --ont -t ${task.cpus} --telo-m ${params.telo_motif} --dual-scaf \
+    -o ${HIFIASM_DIR}/hifiasmONT_asm <MODE_ARGS> longreads.fastq
 # MODE_ARGS: default = (empty) | Hi-C = --h1 ${hic1} --h2 ${hic2} | trio = -1 pat.yak -2 mat.yak
 
 # GFA_TO_FASTA — per p_ctg GFA (collapsed + hap1 + hap2)
@@ -724,12 +754,29 @@ collapsed `p_ctg` plus `hap1`/`hap2` `p_ctg`: e.g. `hifiasmONT_asm.bp.p_ctg.gfa`
 output matches `hifiasmONT_asm.*.p_ctg.gfa` regardless of sub-mode, so `GFA_TO_FASTA` doesn't
 need to know which sub-mode ran.
 
-`--threads` for hifiasm uses `task.cpus` directly. `withLabel: 'hifiasm'` sets `cpus = {
-params.threads * 2 }`, same as `VERKKO` (§5) — normally the local executor would silently cap
-that back down to the host's real core count, but `nextflow.config` raises the local executor's
-own cpu ceiling to match (`executor { $local { cpus = params.threads * 2 } }`), so it doesn't.
-See §5's `VERKKO` note and `sessions/session.md` for the full reasoning (including why that
-ceiling is safe to raise pipeline-wide for this specific DAG).
+hifiasm's `-t` uses `task.cpus` directly. `withLabel: 'hifiasm'` sets `cpus = { params.threads
+}`, same as `VERKKO` (§5) — `--threads` is meant for the assembler itself, passed straight
+through uncapped, while every other process is capped at `Math.min(params.threads as int, 48)`.
+See §5's `VERKKO` note and `sessions/session.md` for why an earlier `* 2` oversubscription
+attempt (with a matching executor cpu-ceiling raise) was dropped — it produced a segfault here
+instead of the intended doubled thread count.
+
+**`HIFIASM_DIR` (stable output dir, not `publishDir`)** — same pattern as `VERKKO_DIR` (§5):
+`def HIFIASM_DIR = "${file(params.output).toAbsolutePath()}/${params.sample}/hifiasm"` at the
+top of `modules/local/hifiasm.nf`, shared by both `HIFIASM` and `GFA_TO_FASTA` (the latter's
+`publishDir` points at it too, so the derived FASTAs land next to their source GFAs). hifiasm
+caches its error-corrected reads and all-vs-all overlaps in binary checkpoint files
+(`*.ec.bin`, `*.ovlp.reverse.bin`, `*.ovlp.source.bin`) next to its `-o` prefix, and on a
+subsequent run with the same prefix it detects and reuses them instead of recomputing that
+stage — conceptually the same problem `VERKKO_DIR` solves for Verkko's Snakemake state, just a
+prefix-keyed checkpoint mechanism instead of a DAG. Without a stable prefix, a re-run that
+changes `--threads` (or anything else that changes the task hash) would land in a fresh,
+empty ephemeral work dir and lose those `.bin` files, forcing a full recompute. `HIFIASM` has
+no `publishDir` — it writes directly to `HIFIASM_DIR` — and its `output:` paths are the
+absolute `${HIFIASM_DIR}/hifiasmONT_asm*` / `${HIFIASM_DIR}/hifiasmONT_asm.*.p_ctg.gfa` rather
+than the old relative, task-work-dir-copied paths. Same concurrent-run caveat as `VERKKO_DIR`:
+overlapping `nextflow run` invocations for the same `--sample`/`--output` collide on this
+directory.
 
 ### Open questions (leave `// TODO(user):`, don't block)
 1. **`.gz` passthrough.** hifiasm accepts gzipped FASTQ directly; for a single-file `.fastq.gz`

@@ -11,9 +11,9 @@ SAMPLE=HG002
 OUT_DIR="results/${SAMPLE}_assembly_qc"
 
 # Assembly FASTAs — defaults assume a prior main-pipeline run (see run_wf.sh) landed here.
-ASSEMBLY="results/${SAMPLE}/verkko_output/assembly.fasta"                # combined
-ASSEMBLY_H1="results/${SAMPLE}/verkko_output/assembly.haplotype1.fasta"
-ASSEMBLY_H2="results/${SAMPLE}/verkko_output/assembly.haplotype2.fasta"
+ASSEMBLY="results/${SAMPLE}/verkko/assembly.fasta"                # combined
+ASSEMBLY_H1="results/${SAMPLE}/verkko/assembly.haplotype1.fasta"
+ASSEMBLY_H2="results/${SAMPLE}/verkko/assembly.haplotype2.fasta"
 CHM13_REF="data/chm13v2.0.fasta"                                         # QUAST reference
 
 TOOLS="gfastats,seqtk,compleasm,quast"

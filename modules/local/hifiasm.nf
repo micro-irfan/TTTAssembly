@@ -7,11 +7,25 @@
 // Hi-C mode, pat_yak/mat_yak may be [[],[]] outside trio mode. Emits the full output set plus
 // a `gfas` channel matching all three p_ctg GFAs regardless of which sub-mode ran (default:
 // bp.*, Hi-C: hic.*, trio: dip.*).
+//
+// Runs in a STABLE directory under ${params.output}, not the ephemeral per-task work dir — same
+// rationale and mechanism as VERKKO_DIR (modules/local/verkko.nf). hifiasm caches its
+// error-corrected reads and all-vs-all overlaps in binary checkpoint files (*.ec.bin,
+// *.ovlp.reverse.bin, *.ovlp.source.bin) next to its output prefix, and on a subsequent run with
+// the same prefix it detects and reuses them instead of recomputing that stage. If a re-run
+// changes --threads (or anything else that changes this task's hash), Nextflow would normally
+// start the retry in a brand-new empty work dir, losing those .bin files and forcing a full
+// recompute. Pointing the output prefix at a fixed absolute path instead means hifiasm finds its
+// own prior checkpoint files there on any re-run. Must be an absolute path for the same reason
+// as VERKKO_DIR: the script block's CWD is the task's own ephemeral work dir, so a bare
+// `${params.output}/...` would resolve inside that instead of the intended stable location.
+def HIFIASM_DIR = "${file(params.output).toAbsolutePath()}/${params.sample}/hifiasm"
 
 process HIFIASM {
     tag "${params.sample}"
     label 'hifiasm'
-    publishDir "${params.output}/${params.sample}", mode: 'copy'
+    // No publishDir: hifiasm already writes directly into its final home under ${params.output}
+    // (see HIFIASM_DIR above), so there's nothing left to copy.
 
     input:
     path longreads                     // normalized long reads (PREPARE_LONGREADS)
@@ -19,20 +33,22 @@ process HIFIASM {
     tuple path(pat_yak), path(mat_yak) // may be [ [], [] ] outside trio mode
 
     output:
-    path "hifiasmONT_asm*",                 emit: all
-    path "hifiasmONT_asm.*.p_ctg.gfa",      emit: gfas
+    path "${HIFIASM_DIR}/hifiasmONT_asm*",            emit: all
+    path "${HIFIASM_DIR}/hifiasmONT_asm.*.p_ctg.gfa", emit: gfas
 
     script:
     def mode_args = hic1
         ? "--h1 ${hic1} --h2 ${hic2}"
         : (pat_yak ? "-1 ${pat_yak} -2 ${mat_yak}" : '')
-    // task.cpus is already params.threads * 2 (withLabel: 'hifiasm' in nextflow.config) — the
-    // executor{ $local { cpus = ... } } override there raises the local executor's ceiling so
-    // this doesn't get silently capped back down to the host's real core count. Same approach
+    // task.cpus is params.threads directly (withLabel: 'hifiasm' in nextflow.config) — --threads
+    // is meant for the assembler itself, passed straight through to hifiasm's -t. Same approach
     // as VERKKO's --local-cpus (modules/local/verkko.nf).
+    // hifiasm has no --threads long option, only -t (verified against CommandLines.cpp's
+    // ketopt long_options table for v0.25.0 — thread count is parsed solely via `-t`).
     """
-    hifiasm --ont --threads ${task.cpus} --telo-m ${params.telo_motif} --dual-scaf -o hifiasmONT_asm \
-        ${mode_args} ${longreads}
+    mkdir -p ${HIFIASM_DIR}
+    hifiasm --ont -t ${task.cpus} --telo-m ${params.telo_motif} --dual-scaf \
+        -o ${HIFIASM_DIR}/hifiasmONT_asm ${mode_args} ${longreads}
     """
 }
 
@@ -41,11 +57,13 @@ process HIFIASM {
 // Called once, fed HIFIASM.out.gfas.flatten() — Nextflow fans that out into one task per GFA,
 // no aliasing needed (single call site, unlike PREPARE_LONGREADS/YAK_COUNT). Reuses the
 // samtools container/env (label 'samtools') — just needs awk, already on that image.
+// Published alongside HIFIASM's own output (HIFIASM_DIR, same stable path) rather than a plain
+// task-work-dir + publishDir copy, so the GFA and its derived FASTA live side by side.
 
 process GFA_TO_FASTA {
     tag "${params.sample}:${gfa.baseName}"
     label 'samtools'
-    publishDir "${params.output}/${params.sample}", mode: 'copy'
+    publishDir "${HIFIASM_DIR}", mode: 'copy'
 
     input:
     path gfa

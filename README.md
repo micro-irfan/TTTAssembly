@@ -187,7 +187,10 @@ results/
 ├── qc/              # ${sample}.ultralong.read_stats.tsv, ${sample}.porec.read_stats.tsv (if Pore-C),
 │                    # ${sample}.corrected.read_stats.tsv, nanoplot_${sample}/ (with --plot)
 ├── corrected/        # ${sample}.doradocorrect.fasta
-├── verkko_output/     # assembly.fasta, assembly.haplotype1.fasta, assembly.haplotype2.fasta, ...
+├── ${sample}/verkko/  # assembly.fasta, assembly.haplotype1.fasta, assembly.haplotype2.fasta, ... —
+│                      # a STABLE path (not the ephemeral task work dir): if a re-run changes
+│                      # --threads/--max_memory_gb, Verkko finds its own prior progress here and
+│                      # resumes internally instead of starting over (see CLAUDE.md §5)
 ├── ${sample}.software_versions.json  # samtools/seqkit/NanoPlot/dorado/verkko/nextflow/pipeline versions
 └── pipeline_info/     # timeline/report/trace/dag
 ```
@@ -195,11 +198,15 @@ results/
 **Scalable mode** (long-reads normalization is an internal intermediate, not published):
 ```
 results/
-├── qc/                        # ${sample}.longreads.read_stats.tsv, nanoplot_${sample}/ (with --plot)
-└── ${sample}/                 # hifiasmONT_asm* (full hifiasm output) + one .fasta per p_ctg GFA:
-                                # hifiasmONT_asm.<bp|hic|dip>.p_ctg.{gfa,fasta},
-                                # .hap1.p_ctg.{gfa,fasta}, .hap2.p_ctg.{gfa,fasta}
-                                # (infix is bp/hic/dip depending on which sub-mode ran)
+├── qc/                          # ${sample}.longreads.read_stats.tsv, nanoplot_${sample}/ (with --plot)
+└── ${sample}/hifiasm/            # hifiasmONT_asm* (full hifiasm output) + one .fasta per p_ctg GFA:
+                                  # hifiasmONT_asm.<bp|hic|dip>.p_ctg.{gfa,fasta},
+                                  # .hap1.p_ctg.{gfa,fasta}, .hap2.p_ctg.{gfa,fasta}
+                                  # (infix is bp/hic/dip depending on which sub-mode ran) — a
+                                  # STABLE path (not the ephemeral task work dir): if a re-run
+                                  # changes --threads, hifiasm finds its own prior checkpoint
+                                  # (.bin) files here and reuses them instead of starting over
+                                  # (see CLAUDE.md §11)
 ```
 
 ## Testing
