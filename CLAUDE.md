@@ -388,10 +388,15 @@ process VERKKO {
   process (confirmed twice with `HIFIASM` — `task.cpus` kept coming out as the bare default's
   value regardless of `--threads`, the reverse of Nextflow's documented generic-lowest/
   `withLabel`-higher precedence; see `sessions/session.md`), so every label sets its own value
-  directly instead of relying on that precedence. Separately, `executor { $local { cpus =
-  params.threads } }` raises the local executor's own cpu ceiling to `params.threads`, in case
-  the host's auto-detected processor count is lower than that (Nextflow's local executor silently
-  caps a task's `cpus` directive to its ceiling otherwise). An earlier version doubled `cpus` to
+  directly instead of relying on that precedence. Separately, `executor.cpus = params.threads`
+  raises the local executor's own cpu ceiling to `params.threads`, in case the host's
+  auto-detected processor count is lower than that (Nextflow's local executor silently caps a
+  task's `cpus` directive to its ceiling otherwise — this is JVM `Runtime.availableProcessors()`,
+  which follows the launching process's own cgroup quota, not necessarily the full node). Must be
+  the flat `executor.cpus` key, **not** nested as `executor { $local { cpus = ... } } }` — that
+  form is silently ignored (`WARN: Unrecognized config option`); `$name` nesting is only valid
+  for a handful of other executor options (queueSize, pollInterval, ...), not cpus/memory — see
+  `sessions/session.md`. An earlier version doubled `cpus` to
   `params.threads * 2` to intentionally oversubscribe Verkko's internal thread pool — dropped
   (see `sessions/session.md`) once the underlying config-precedence bug made it clear that was
   never actually taking effect either.
@@ -777,8 +782,9 @@ hifiasm's `-t` uses `task.cpus` directly. `withLabel: 'hifiasm'` sets `cpus = { 
 through uncapped, while every other process is capped at `Math.min(params.threads as int, 48)`
 inside its own `withLabel:` block. See §5's `VERKKO` note and `sessions/session.md` for why
 `nextflow.config`'s `process {}` scope carries no bare `cpus`/`memory` default (a bare value was
-found to win over a matching `withLabel` override in practice) and why the `executor { $local {
-cpus = params.threads } }` ceiling-raise exists alongside it.
+found to win over a matching `withLabel` override in practice) and why the flat
+`executor.cpus = params.threads` ceiling-raise exists alongside it (not the `$local`-nested
+form, which Nextflow silently ignores).
 
 **`HIFIASM_DIR` (stable output dir, not `publishDir`)** — same pattern as `VERKKO_DIR` (§5):
 `def HIFIASM_DIR = "${file(params.output).toAbsolutePath()}/${params.sample}/hifiasm"` at the
