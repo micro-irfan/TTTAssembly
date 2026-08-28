@@ -381,14 +381,20 @@ process VERKKO {
   `assembly.haplotype1.fasta`, `assembly.haplotype2.fasta`.
 - `--local-cpus` uses `task.cpus` directly. `withLabel: 'verkko'` sets `cpus = { params.threads
   }` — `--threads` is meant for the assembler itself, passed straight through uncapped. Every
-  other process's `cpus` is capped at `Math.min(params.threads as int, 48)` instead (see the
-  `process {}` default in `nextflow.config`) — support work (format conversion, QC, correction)
-  doesn't need or benefit from arbitrarily large core counts. An earlier version doubled this
-  (`cpus = params.threads * 2`, meant to intentionally oversubscribe Verkko's internal thread
-  pool) with a matching `executor { $local { cpus = params.threads * 2 } }` ceiling-raise to
-  stop the local executor silently capping that back down — dropped after HIFIASM's identical
-  trick produced a segfault in practice (see `sessions/session.md`) rather than the intended
-  doubled thread count.
+  other process's `cpus` is capped at `Math.min(params.threads as int, 48)` instead, set inside
+  that process's own `withLabel:` block — **not** as a bare `process { cpus = ... }` default.
+  `nextflow.config`'s `process {}` scope deliberately carries no bare `cpus`/`memory` at all: one
+  was found in practice to win over a matching `withLabel: 'x' { cpus = ... }` for the same
+  process (confirmed twice with `HIFIASM` — `task.cpus` kept coming out as the bare default's
+  value regardless of `--threads`, the reverse of Nextflow's documented generic-lowest/
+  `withLabel`-higher precedence; see `sessions/session.md`), so every label sets its own value
+  directly instead of relying on that precedence. Separately, `executor { $local { cpus =
+  params.threads } }` raises the local executor's own cpu ceiling to `params.threads`, in case
+  the host's auto-detected processor count is lower than that (Nextflow's local executor silently
+  caps a task's `cpus` directive to its ceiling otherwise). An earlier version doubled `cpus` to
+  `params.threads * 2` to intentionally oversubscribe Verkko's internal thread pool — dropped
+  (see `sessions/session.md`) once the underlying config-precedence bug made it clear that was
+  never actually taking effect either.
 - **`VERKKO_DIR` (stable output dir, not `publishDir`)**: Verkko manages its own Snakemake-based
   incremental state inside its `-d` directory. If a re-run changes `--threads`/
   `--max_memory_gb` (or anything else that changes this task's hash), Nextflow would normally
@@ -768,10 +774,11 @@ need to know which sub-mode ran.
 
 hifiasm's `-t` uses `task.cpus` directly. `withLabel: 'hifiasm'` sets `cpus = { params.threads
 }`, same as `VERKKO` (§5) — `--threads` is meant for the assembler itself, passed straight
-through uncapped, while every other process is capped at `Math.min(params.threads as int, 48)`.
-See §5's `VERKKO` note and `sessions/session.md` for why an earlier `* 2` oversubscription
-attempt (with a matching executor cpu-ceiling raise) was dropped — it produced a segfault here
-instead of the intended doubled thread count.
+through uncapped, while every other process is capped at `Math.min(params.threads as int, 48)`
+inside its own `withLabel:` block. See §5's `VERKKO` note and `sessions/session.md` for why
+`nextflow.config`'s `process {}` scope carries no bare `cpus`/`memory` default (a bare value was
+found to win over a matching `withLabel` override in practice) and why the `executor { $local {
+cpus = params.threads } }` ceiling-raise exists alongside it.
 
 **`HIFIASM_DIR` (stable output dir, not `publishDir`)** — same pattern as `VERKKO_DIR` (§5):
 `def HIFIASM_DIR = "${file(params.output).toAbsolutePath()}/${params.sample}/hifiasm"` at the
