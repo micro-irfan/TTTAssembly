@@ -8,16 +8,6 @@ nextflow.enable.dsl = 2
 
 include { ASSEMBLY_QC } from './workflows/assembly_qc.nf'
 
-// --output/--sample aren't given their own defaults in nextflow.config — that file is shared
-// with main.nf, and a second default for the same key there would silently win for both entry
-// scripts (see the comment in nextflow.config). Apply this workflow's preferred defaults here
-// instead, before --help or validation run, but only when the value is still exactly the
-// inherited main-pipeline default (i.e. the user didn't pass --output/--sample explicitly) —
-// narrow edge case: someone who explicitly wants literally "results"/"sample" for a QC run
-// would get overridden too, an acceptable trade-off for sensible defaults in the common case.
-if (params.output == 'results') { params.output = 'assembly_qc' }
-if (params.sample == 'sample')  { params.sample = 'assembly' }
-
 def helpMessage() {
     log.info """
     Standalone assembly-QC workflow
@@ -74,50 +64,68 @@ def helpMessage() {
     """.stripIndent()
 }
 
-if (params.help) {
-    helpMessage()
-    exit 0
-}
-
 // ---------------------------------------------------------------------------
-// Validation — fail fast, before any process launches
-// ---------------------------------------------------------------------------
-def errors = []
-
-def ALLOWED_TOOLS = ['gfastats', 'seqtk', 'compleasm', 'quast', 'merqury', 'merfin'] as Set
-
-if (!params.assembly) {
-    errors << "--assembly is required"
-}
-
-def toolsStr = (params.tools ?: '').trim().toLowerCase()
-def tools    = (!toolsStr || toolsStr == 'none') ? [] as Set : toolsStr.split(',').collect { it.trim() } as Set
-
-if (tools) {
-    def bad = tools.findAll { !(it in ALLOWED_TOOLS) }
-    if (bad) {
-        errors << "--tools: unknown token(s) ${bad.join(', ')} — expected a comma-separated " +
-                  "subset of ${ALLOWED_TOOLS.join(', ')}, or 'none'"
-    }
-}
-
-if (('merqury' in tools || 'merfin' in tools) && !params.reads) {
-    errors << "--reads is required when --tools includes merqury or merfin"
-}
-
-if ('merfin' in tools && !params.merfin_peak) {
-    errors << "--merfin_peak is required when --tools includes merfin (automatic derivation " +
-              "from GenomeScope2 output is not implemented — see CLAUDE.md §10)"
-}
-
-if (errors) {
-    log.error "Parameter validation failed:\n" + errors.collect { "  - ${it}" }.join('\n')
-    exit 1
-}
-
-// ---------------------------------------------------------------------------
-// Dispatch
+// Entry point. Everything (defaults, help, validation, dispatch) lives inside this one
+// top-level `workflow {}` block rather than as bare top-level statements — Nextflow's strict
+// parser rejects "Statements cannot be mixed with script declarations" when imperative code sits
+// outside a process/workflow/function (hit in practice — see sessions/session.md). Only
+// `include`/`def` declarations are allowed at the true top level.
 // ---------------------------------------------------------------------------
 workflow {
+    // --output/--sample aren't given their own defaults in nextflow.config — that file is
+    // shared with main.nf, and a second default for the same key there would silently win for
+    // both entry scripts (see the comment in nextflow.config). Apply this workflow's preferred
+    // defaults here instead, before --help or validation run, but only when the value is still
+    // exactly the inherited main-pipeline default (i.e. the user didn't pass --output/--sample
+    // explicitly) — narrow edge case: someone who explicitly wants literally "results"/"sample"
+    // for a QC run would get overridden too, an acceptable trade-off for sensible defaults in
+    // the common case.
+    if (params.output == 'results') { params.output = 'assembly_qc' }
+    if (params.sample == 'sample')  { params.sample = 'assembly' }
+
+    if (params.help) {
+        helpMessage()
+        exit 0
+    }
+
+    // -----------------------------------------------------------------------
+    // Validation — fail fast, before any process launches
+    // -----------------------------------------------------------------------
+    def errors = []
+
+    def ALLOWED_TOOLS = ['gfastats', 'seqtk', 'compleasm', 'quast', 'merqury', 'merfin'] as Set
+
+    if (!params.assembly) {
+        errors << "--assembly is required"
+    }
+
+    def toolsStr = (params.tools ?: '').trim().toLowerCase()
+    def tools    = (!toolsStr || toolsStr == 'none') ? [] as Set : toolsStr.split(',').collect { it.trim() } as Set
+
+    if (tools) {
+        def bad = tools.findAll { !(it in ALLOWED_TOOLS) }
+        if (bad) {
+            errors << "--tools: unknown token(s) ${bad.join(', ')} — expected a comma-separated " +
+                      "subset of ${ALLOWED_TOOLS.join(', ')}, or 'none'"
+        }
+    }
+
+    if (('merqury' in tools || 'merfin' in tools) && !params.reads) {
+        errors << "--reads is required when --tools includes merqury or merfin"
+    }
+
+    if ('merfin' in tools && !params.merfin_peak) {
+        errors << "--merfin_peak is required when --tools includes merfin (automatic derivation " +
+                  "from GenomeScope2 output is not implemented — see CLAUDE.md §10)"
+    }
+
+    if (errors) {
+        log.error "Parameter validation failed:\n" + errors.collect { "  - ${it}" }.join('\n')
+        exit 1
+    }
+
+    // -----------------------------------------------------------------------
+    // Dispatch
+    // -----------------------------------------------------------------------
     ASSEMBLY_QC()
 }
