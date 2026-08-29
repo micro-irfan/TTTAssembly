@@ -97,6 +97,7 @@ reads go to `--hifi`, and `--no-correction` tells Verkko not to re-correct them.
 | `--threads` | `8` | Default CPUs per process (maps to `task.cpus`). |
 | `--dorado_device` | `cuda:0` | Device string for `dorado correct -x`. |
 | `--dorado_path` | `null` | Override path to the `dorado` binary; defaults to `dorado` on `PATH`. Mainly for `-profile conda` (no dorado conda package). |
+| `--images_dir` | `${projectDir}/images` | Path to a directory of built `.sif` images (`-profile singularity` only). Override to point at a shared/pre-built images dir instead of this checkout's own gitignored `images/`. |
 | `--min_qs` | `10` | Filter threshold, mean read qscore. **ULK only** — Pore-C has no qscore filter. |
 | `--min_len_ulk` | `10000` | Filter threshold, ULK read length (bp). |
 | `--min_len_porec` | `500` | Filter threshold, Pore-C read length (bp). Length-only (no qscore filter). |
@@ -774,7 +775,11 @@ hifiasm --ont -t ${task.cpus} --telo-m ${params.telo_motif} --dual-scaf \
     -o hifiasm_out/hifiasmONT_asm <MODE_ARGS> longreads.fastq
 # MODE_ARGS: default = (empty) | Hi-C = --h1 ${hic1} --h2 ${hic2} | trio = -1 pat.yak -2 mat.yak
 
-# GFA_TO_FASTA — per p_ctg GFA (collapsed + hap1 + hap2)
+# GFA_TO_FASTA — per p_ctg GFA (collapsed + hap1 + hap2). Shown here as plain shell; the actual
+# module (modules/local/hifiasm.nf) needs `\\n` (not `\n`) inside the Nextflow triple-quoted
+# script string — Groovy itself turns an unescaped `\n` into a real newline character while
+# parsing the string, corrupting awk's single-quoted script ("runaway string constant" — hit in
+# practice, see sessions/session.md). `\\n` preserves the literal two-character `\n` for awk.
 awk '/^S/{print ">" $2 "\n" $3}' ${gfa} > ${gfa.baseName}.fasta
 ```
 

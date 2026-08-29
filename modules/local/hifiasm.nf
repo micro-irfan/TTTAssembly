@@ -81,7 +81,12 @@ process GFA_TO_FASTA {
     path "${gfa.baseName}.fasta", emit: fasta
 
     script:
+    // \\n (not \n): inside a Nextflow triple-quoted script string, Groovy itself interprets \n
+    // as an actual newline character during string parsing, corrupting the single-quoted awk
+    // script with a real line break instead of the two-character escape awk expects — produces
+    // "awk: line 1: runaway string constant" (hit in practice — see sessions/session.md). \\n
+    // preserves the literal backslash so awk sees `\n` and interprets it itself.
     """
-    awk '/^S/{print ">" \$2 "\n" \$3}' ${gfa} > ${gfa.baseName}.fasta
+    awk '/^S/{print ">" \$2 "\\n" \$3}' ${gfa} > ${gfa.baseName}.fasta
     """
 }

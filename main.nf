@@ -66,6 +66,8 @@ def helpMessage() {
       --dorado_device   Device string for `dorado correct -x` (default: ${params.dorado_device})
       --dorado_path     Override path to the dorado binary (default: 'dorado' on PATH). Mainly
                         for -profile conda, which has no dorado conda package.
+      --images_dir      Path to a directory of built .sif images (-profile singularity only)
+                        (default: ${params.images_dir})
       --output          Output directory (default: ${params.output})
       --help            Show this message and exit.
 
